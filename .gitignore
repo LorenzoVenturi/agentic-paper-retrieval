@@ -1,0 +1,43 @@
+# Credentials and machine-local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.aws/
+.codex/
+.agents/
+
+# Python environments, caches, and build output
+.venv/
+.ci-venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+
+# Research data and generated artifacts
+data/*
+!data/.gitkeep
+outputs/
+artifacts/
+*.pdf
+*.faiss
+*.sqlite
+*.sqlite3
+*.db
+
+# Editors and operating system
+.DS_Store
+.idea/
+.vscode/
+*.log
+.ipynb_checkpoints/
