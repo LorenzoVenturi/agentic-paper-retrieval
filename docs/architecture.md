@@ -39,16 +39,24 @@ Research query + filters
 | Orchestration | Track workflow state, bounded retries, human decisions, and search iterations. |
 | Evaluation | Measure retrieval quality, duplicate handling, and citation support on curated queries. |
 
-Implementation modules will be added as these components are built. Model providers, paper APIs, embedding models, and index storage are deliberately undecided at this stage.
+## Implemented first slice
+
+- `models.py` defines normalized paper metadata and search results.
+- `sources/base.py` defines the source interface; `sources/arxiv.py` implements keyword/raw search, stable arXiv IDs, version deduplication, a 24-hour cache, and request pacing.
+- `ollama.py` calls a local Ollama chat server with a JSON schema. The model can propose a search or finish with retrieved paper IDs.
+- `agent.py` enforces a bounded search loop, researcher approval/edits, repeated-query detection, and paper-ID validation. Source-supplied relevance order is retained; the model can order its final shortlist.
+- The CLI exposes `search` and `research`, readable output, and JSON exports. Direct search works without Ollama.
+
+The first model provider is local Ollama and the first paper API is arXiv. Embedding models and index storage remain undecided. Source metadata and abstract excerpts inform search refinement; this is not yet a RAG answer-generation pipeline.
 
 ## First milestones
 
-1. **Paper search:** implement one source adapter, a query command, normalized metadata, and JSON export.
-2. **Assisted selection:** add search-plan review, filters, deduplication, and paper selection.
-3. **Evidence retrieval:** ingest selected abstracts/full text, retain provenance, and retrieve relevant chunks.
-4. **Grounded answers:** generate answers with resolvable citations and surface missing evidence.
-5. **Bounded agent loop:** allow query refinement with explicit search limits and observable actions.
-6. **Evaluation:** add reproducible query sets and assess retrieval relevance and citation support.
+1. **Implemented — paper search:** one source adapter, keyword/raw query commands, normalized metadata, and JSON export.
+2. **Implemented — assisted agent loop:** Ollama planning/refinement, per-search human approval and edits, version deduplication, a model-selected shortlist, explicit search limits, and an action trace.
+3. **Next — retrieval evaluation:** curate realistic questions, label relevant papers, and compare direct search with the agent's shortlist.
+4. **Next — researcher paper selection:** let the researcher explicitly approve the final shortlist for ingestion.
+5. **Next — evidence retrieval:** ingest selected abstracts/full text, retain provenance, and retrieve relevant chunks.
+6. **Next — grounded answers:** generate answers with resolvable citations and evaluate citation support.
 
 ## Data handling
 

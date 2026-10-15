@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Synthetic metadata for offline tests, not real papers. -->
+<feed xmlns="http://www.w3.org/2005/Atom"
+      xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/"
+      xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <opensearch:totalResults>3</opensearch:totalResults>
+  <entry>
+    <id>http://arxiv.org/abs/2501.99999v2</id>
+    <title>  Synthetic Retrieval
+      Study </title>
+    <summary>A synthetic abstract about retrieval and factuality.</summary>
+    <published>2025-01-01T12:00:00Z</published>
+    <author><name>Example Researcher</name></author>
+    <author><name>Second Author</name></author>
+    <category term="cs.CL"/>
+    <arxiv:doi>10.0000/synthetic</arxiv:doi>
+    <link href="http://arxiv.org/pdf/2501.99999v2" title="pdf" type="application/pdf"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2501.99999v1</id>
+    <title>Synthetic Retrieval Study</title>
+    <summary>An earlier version of the synthetic study.</summary>
+    <published>2025-01-01T12:00:00Z</published>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/cs/9909999v1</id>
+    <title>Another Synthetic Study</title>
+    <summary>Evidence for an additional search round.</summary>
+    <published>1999-09-01T12:00:00Z</published>
+    <author><name>Example Author</name></author>
+  </entry>
+</feed>
