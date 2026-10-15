@@ -2,7 +2,7 @@
 
 A Python project for finding research papers from a natural-language query, with human guidance during search and evidence-backed answers using retrieval-augmented generation (RAG).
 
-**Status:** arXiv search and an assisted Ollama search agent are implemented. Full-text ingestion, embeddings, and RAG answer generation are the next milestones.
+**Status:** arXiv search, structured query improvement, and an assisted Ollama search agent orchestrated by LangGraph are implemented. Full-text ingestion, embeddings, and RAG answer generation are the next milestones.
 
 ## Try paper search
 
@@ -41,10 +41,17 @@ In your project terminal:
 ```bash
 ollama pull qwen3:4b
 source .venv/bin/activate
+paper-retriever refine "How can RAG reduce hallucinations?" --model qwen3:4b
 paper-retriever research "How does retrieval augmented generation reduce hallucinations?" --model qwen3:4b --max-rounds 3 --output outputs/research.json
 ```
 
-The model proposes keywords and explains its choice. Press Enter to approve a search, type a replacement query to edit it, or enter `/stop`. After each search, the model reads returned titles and abstract excerpts, then proposes a refinement or finishes with a paper shortlist. Models do not execute arbitrary tools; the runner can only search the configured paper source.
+`refine` previews a clearer research question, key concepts, 1–3 alternative keyword searches, assumptions, and clarification questions without searching arXiv. Add `--json` or `--output outputs/query-plan.json` to export the plan.
+
+`research` first improves the question and pauses for your review. Press Enter to accept, type an updated research question with any clarification answers, or enter `/stop`. An edited question generates a fresh keyword plan. Then approve or edit each proposed search separately. After each search, the model reads returned titles and abstract excerpts, then proposes another query or finishes with a paper shortlist.
+
+The query-improvement prompt asks the model to preserve the original intent and explicit constraints, expand well-supported abbreviations, and expose ambiguity instead of silently narrowing the topic. These are model instructions, so review the rewrite. Date/population constraints are not enforced as structured source filters yet; direct search supports explicit arXiv filters through `--raw-query`.
+
+LangGraph controls the workflow and uses `interrupt()` / `Command(resume=...)` for approvals. Model calls and searches run in separate nodes, so resuming an approval does not repeat them. Checkpoints are held in memory during a run; restarting the CLI does not resume a previous session. Models can only request searches from the configured paper source.
 
 Use `--auto` to allow searches within the same round limit without approval prompts:
 
@@ -56,14 +63,15 @@ paper-retriever research "RAG hallucination evaluation benchmarks" --model qwen3
 
 ## What the agent does
 
+- Improves the initial question before retrieval, extracts key concepts, and proposes alternative keyword searches.
 - Plans searches from the research question and refines them using retrieved evidence.
 - Records proposed queries, researcher edits, actual source queries, and returned paper IDs.
 - Combines papers across rounds, deduplicating arXiv versions by their stable identifier.
 - Stops after at most 1–5 searches (3 by default), an earlier model decision, a repeated query, or a researcher stop.
-- Allows at most one model decision per search plus a final selection decision when the budget is reached.
+- Uses one query-refinement call, at most one extra refinement after a question edit, and one evaluation call per completed search.
 - Rejects selections containing paper IDs outside the evidence supplied to the model.
 
-The JSON export contains all retrieved candidates, the ordered selected IDs, the action history, and the stopping reason. Progress and approval prompts go to stderr so `--json` stdout remains machine-readable.
+The JSON export contains the original `question`, `initial_refinement`, latest `refinement`, approved/edited `effective_question`, `query_review` status, all retrieved candidates, ordered selected IDs, the action history, and the stopping reason. The graph's `rationale` explains the actual stop; the model's separate `model_assessment` records its interpretation of the evidence. `unresolved_clarifications` retains questions from the latest query plan even if the evaluator claims they were answered. Progress and approval prompts go to stderr so `--json` stdout remains machine-readable.
 
 ## Current limits
 
@@ -87,9 +95,10 @@ See [the architecture and milestones](docs/architecture.md) for the implementati
 ```text
 src/agentic_paper_retrieval/
   models.py                  Normalized metadata
+  planning.py                Validated query plans and model decisions
   sources/                   Reusable paper-source interface and arXiv adapter
   ollama.py                  Local model planner with structured decisions
-  agent.py                   Bounded assisted search orchestration
+  agent.py                   LangGraph state, nodes, routing, and approval pauses
   __main__.py                CLI and JSON export
 docs/architecture.md         Workflow, boundaries, and implementation milestones
 tests/                      Offline behavioral tests and synthetic fixtures
@@ -107,6 +116,6 @@ python -m build
 python -m unittest discover -s tests -v
 ```
 
-CI builds and installs the wheel in a fresh environment, then checks both entry points and runs the offline suite on Python 3.11 and 3.12. Tests cover metadata parsing, API failures, caching, human edits, deduplication, search limits, invented citations, Ollama's request contract, and JSON export. They require neither internet access nor a running model.
+CI builds and installs the wheel in a fresh environment, then checks both entry points and runs the offline suite on Python 3.11 and 3.12. Tests cover metadata parsing, API failures, caching, query-plan validation, graph approvals, question edits and replanning, deduplication, search limits, invented citations, Ollama's request contract, and JSON export. They require neither internet access nor a running model after dependencies are installed.
 
-API references: [arXiv](https://info.arxiv.org/help/api/user-manual.html), [Ollama chat](https://docs.ollama.com/api/chat), [Ollama structured outputs](https://docs.ollama.com/capabilities/structured-outputs).
+API references: [arXiv](https://info.arxiv.org/help/api/user-manual.html), [Ollama chat](https://docs.ollama.com/api/chat), [Ollama structured outputs](https://docs.ollama.com/capabilities/structured-outputs), [LangGraph Graph API](https://docs.langchain.com/oss/python/langgraph/graph-api), [LangGraph interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts).

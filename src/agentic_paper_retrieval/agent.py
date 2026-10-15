@@ -1,53 +1,92 @@
-"""A bounded search loop with optional human approval at each search."""
+"""LangGraph workflow for query refinement and assisted paper discovery."""
 
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from typing import Protocol
+from uuid import uuid4
+
+from typing_extensions import TypedDict
+
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
 
 from agentic_paper_retrieval.models import Paper
+from agentic_paper_retrieval.planning import (
+    Decision, Planner, PlannerError, QueryRefinement, SearchStep, parse_refinement,
+)
 from agentic_paper_retrieval.sources.base import PaperSource
-
-
-class PlannerError(RuntimeError):
-    """A planner failed or proposed an invalid action."""
-
-
-@dataclass(frozen=True)
-class Decision:
-    action: str
-    query: str
-    reason: str
-    selected_paper_ids: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class SearchStep:
-    proposed_query: str
-    executed_query: str
-    reason: str
-    source_query: str
-    total_results: int
-    paper_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class ResearchResult:
     question: str
+    initial_refinement: QueryRefinement
+    refinement: QueryRefinement
+    effective_question: str
+    query_review: str
     steps: tuple[SearchStep, ...]
     papers: tuple[Paper, ...]
     selected_paper_ids: tuple[str, ...]
     stop_reason: str
     rationale: str
+    model_assessment: str
+    unresolved_clarifications: tuple[str, ...]
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
-class Planner(Protocol):
-    def decide(
-        self, question: str, steps: tuple[SearchStep, ...], papers: tuple[Paper, ...],
-        *, allow_search: bool,
-    ) -> Decision: ...
+class ResearchState(TypedDict, total=False):
+    question: str
+    initial_refinement: dict
+    refinement: dict
+    effective_question: str
+    query_review: str
+    review_query: bool
+    approve_searches: bool
+    max_rounds: int
+    limit: int
+    decision: dict
+    executed_query: str
+    steps: list[dict]
+    papers: list[dict]
+    seen_queries: list[str]
+    selected_paper_ids: list[str]
+    stop_reason: str
+    rationale: str
+    model_assessment: str
+    result: dict
+
+
+def _papers(records: list[dict]) -> tuple[Paper, ...]:
+    return tuple(Paper(**{
+        **record, "authors": tuple(record["authors"]),
+        "categories": tuple(record.get("categories", ())),
+    }) for record in records)
+
+
+def _steps(records: list[dict]) -> tuple[SearchStep, ...]:
+    return tuple(SearchStep(**{
+        **record, "paper_ids": tuple(record["paper_ids"]),
+    }) for record in records)
+
+
+def _decision(record: dict) -> Decision:
+    return Decision(**{**record, "selected_paper_ids": tuple(record["selected_paper_ids"])})
+
+
+def _result(record: dict) -> ResearchResult:
+    return ResearchResult(
+        question=record["question"],
+        initial_refinement=parse_refinement(record["initial_refinement"]),
+        refinement=parse_refinement(record["refinement"]),
+        effective_question=record["effective_question"], query_review=record["query_review"],
+        steps=_steps(record["steps"]), papers=_papers(record["papers"]),
+        selected_paper_ids=tuple(record["selected_paper_ids"]),
+        stop_reason=record["stop_reason"], rationale=record["rationale"],
+        model_assessment=record["model_assessment"],
+        unresolved_clarifications=parse_refinement(record["refinement"]).clarification_questions,
+    )
 
 
 class ResearchAgent:
@@ -55,9 +94,146 @@ class ResearchAgent:
         self.source = source
         self.planner = planner
 
+    def build_graph(
+        self, *, on_results: Callable[[SearchStep, tuple[Paper, ...]], None] | None = None,
+    ):
+        """Build an inspectable graph with checkpoints held in memory."""
+        def refine_query(state: ResearchState) -> dict:
+            plan = self.planner.refine(state["question"])
+            return {
+                "initial_refinement": plan.to_dict(), "refinement": plan.to_dict(),
+                "effective_question": plan.refined_question,
+            }
+
+        def review_query(state: ResearchState) -> dict:
+            if not state["review_query"]:
+                return {"query_review": "auto"}
+            # Resuming approval must not repeat inference or run a search.
+            response = interrupt({
+                "kind": "query_review", "question": state["question"],
+                "refinement": state["refinement"],
+            })
+            question = response["query"]
+            if question is None:
+                return {
+                    "query_review": "stopped", "stop_reason": "user_stopped",
+                    "rationale": "The researcher stopped during query review.",
+                }
+            if not isinstance(question, str) or not question.strip():
+                raise PlannerError("The approved research question cannot be empty.")
+            question = question.strip()
+            return {
+                "effective_question": question,
+                "query_review": "approved" if question == state["refinement"]["refined_question"] else "edited",
+            }
+
+        def replan_query(state: ResearchState) -> dict:
+            # Regenerate keywords after a researcher changes the question.
+            return {"refinement": self.planner.refine(state["effective_question"]).to_dict()}
+
+        def prepare_search(state: ResearchState) -> dict:
+            plan = parse_refinement(state["refinement"])
+            return {"decision": asdict(Decision("search", plan.search_queries[0], plan.rationale))}
+
+        def approve_search(state: ResearchState) -> dict:
+            decision = _decision(state["decision"])
+            if state["approve_searches"]:
+                response = interrupt({"kind": "search_approval", "decision": asdict(decision)})
+                query = response["query"]
+            else:
+                query = decision.query
+            if query is None:
+                return {"stop_reason": "user_stopped", "rationale": "The researcher stopped the search."}
+            if not isinstance(query, str) or not query.strip():
+                raise PlannerError("The approved search query cannot be empty.")
+            query = " ".join(query.split())
+            if query.casefold() in state["seen_queries"]:
+                return {
+                    "stop_reason": "repeated_query",
+                    "rationale": "Stopped because the proposed search was already executed.",
+                }
+            return {"executed_query": query}
+
+        def search(state: ResearchState) -> dict:
+            if len(state["steps"]) >= state["max_rounds"]:
+                raise PlannerError("The search budget has been exhausted.")
+            query, decision = state["executed_query"], _decision(state["decision"])
+            result = self.source.search(query, limit=state["limit"])
+            catalog = {paper.id: paper for paper in _papers(state["papers"])}
+            for paper in result.papers:
+                catalog.setdefault(paper.id, paper)
+            step = SearchStep(
+                decision.query, query, decision.reason, result.source_query,
+                result.total_results, tuple(paper.id for paper in result.papers),
+            )
+            if on_results:
+                on_results(step, result.papers)
+            return {
+                "steps": [*state["steps"], asdict(step)],
+                "papers": [paper.to_dict() for paper in catalog.values()],
+                "seen_queries": [*state["seen_queries"], query.casefold()],
+            }
+
+        def evaluate(state: ResearchState) -> dict:
+            allow_search = len(state["steps"]) < state["max_rounds"]
+            decision = self.planner.decide(
+                state["effective_question"], _steps(state["steps"]), _papers(state["papers"]),
+                allow_search=allow_search, refinement=parse_refinement(state["refinement"]),
+            )
+            if decision.action == "finish":
+                count = len(state["steps"])
+                noun = "search" if count == 1 else "searches"
+                known_ids = {paper["id"] for paper in state["papers"]}
+                if any(paper_id not in known_ids for paper_id in decision.selected_paper_ids):
+                    raise PlannerError("The model selected a paper that was never retrieved.")
+                return {
+                    "decision": asdict(decision), "model_assessment": decision.reason,
+                    "rationale": (
+                        f"The model chose to finish after {count} {noun}."
+                        if allow_search else
+                        f"Stopped after {count} {noun} because the configured search limit was reached."
+                    ),
+                    "selected_paper_ids": list(dict.fromkeys(decision.selected_paper_ids)),
+                    "stop_reason": "model_finished" if allow_search else "round_limit",
+                }
+            if decision.action != "search" or not allow_search:
+                raise PlannerError("The model proposed an action outside the search budget.")
+            return {"decision": asdict(decision), "model_assessment": decision.reason}
+
+        def finish(state: ResearchState) -> dict:
+            return {"result": _result(state).to_dict()}
+
+        def after_review(state: ResearchState) -> str:
+            if state["stop_reason"]:
+                return "finish"
+            return "replan_query" if state["query_review"] == "edited" else "prepare_search"
+
+        def after_decision(state: ResearchState) -> str:
+            return "finish" if state["stop_reason"] else "approve_search"
+
+        builder = StateGraph(ResearchState)
+        for name, node in (
+            ("refine_query", refine_query), ("review_query", review_query),
+            ("replan_query", replan_query), ("prepare_search", prepare_search),
+            ("approve_search", approve_search), ("search", search),
+            ("evaluate", evaluate), ("finish", finish),
+        ):
+            builder.add_node(name, node)
+        builder.add_edge(START, "refine_query")
+        builder.add_edge("refine_query", "review_query")
+        builder.add_conditional_edges("review_query", after_review, ["finish", "replan_query", "prepare_search"])
+        builder.add_edge("replan_query", "prepare_search")
+        builder.add_edge("prepare_search", "approve_search")
+        builder.add_conditional_edges("approve_search", lambda state: "finish" if state["stop_reason"] else "search", ["finish", "search"])
+        builder.add_edge("search", "evaluate")
+        builder.add_conditional_edges("evaluate", after_decision, ["finish", "approve_search"])
+        builder.add_edge("finish", END)
+        return builder.compile(checkpointer=InMemorySaver())
+
     def run(
         self, question: str, *, max_rounds: int = 3, limit: int = 5,
         approve: Callable[[Decision], str | None] | None = None,
+        review_query: Callable[[QueryRefinement], str | None] | None = None,
         on_results: Callable[[SearchStep, tuple[Paper, ...]], None] | None = None,
     ) -> ResearchResult:
         question = question.strip()
@@ -65,40 +241,24 @@ class ResearchAgent:
             raise ValueError("The research question cannot be empty.")
         if not 1 <= max_rounds <= 5 or not 1 <= limit <= 20:
             raise ValueError("Use 1–5 search rounds and 1–20 results per round.")
-        steps: list[SearchStep] = []
-        catalog: dict[str, Paper] = {}
-        seen_queries: set[str] = set()
-
-        def finish(reason: str, rationale: str, selected: tuple[str, ...] = ()) -> ResearchResult:
-            if any(paper_id not in catalog for paper_id in selected):
-                raise PlannerError("The model selected a paper that was never retrieved.")
-            return ResearchResult(question, tuple(steps), tuple(catalog.values()), tuple(dict.fromkeys(selected)), reason, rationale)
-
-        # At most max_rounds searches and max_rounds + 1 model decisions.
-        for turn in range(max_rounds + 1):
-            allow_search = turn < max_rounds
-            decision = self.planner.decide(question, tuple(steps), tuple(catalog.values()), allow_search=allow_search)
-            if decision.action == "finish":
-                if not steps:
-                    raise PlannerError("The model tried to finish before searching for papers.")
-                return finish("model_finished" if allow_search else "round_limit", decision.reason, decision.selected_paper_ids)
-            if decision.action != "search" or not allow_search:
-                raise PlannerError("The model proposed an action outside the search budget.")
-            query = approve(decision) if approve else decision.query
-            if query is None:
-                return finish("user_stopped", "The researcher stopped the search.")
-            query = " ".join(query.split())
-            if not query:
-                raise PlannerError("The proposed search query is empty.")
-            key = query.casefold()
-            if key in seen_queries:
-                return finish("repeated_query", "Stopped because the proposed search was already executed.")
-            result = self.source.search(query, limit=limit)
-            seen_queries.add(key)
-            for paper in result.papers:
-                catalog.setdefault(paper.id, paper)
-            step = SearchStep(decision.query, query, decision.reason, result.source_query, result.total_results, tuple(p.id for p in result.papers))
-            steps.append(step)
-            if on_results:
-                on_results(step, result.papers)
-        raise AssertionError("The bounded loop must finish or raise an error.")
+        graph = self.build_graph(on_results=on_results)
+        config = {"configurable": {"thread_id": str(uuid4())}, "recursion_limit": 8 * max_rounds + 15}
+        state = graph.invoke({
+            "question": question, "query_review": "auto",
+            "review_query": review_query is not None, "approve_searches": approve is not None,
+            "max_rounds": max_rounds, "limit": limit, "steps": [], "papers": [],
+            "seen_queries": [], "selected_paper_ids": [], "stop_reason": "", "rationale": "",
+            "model_assessment": "",
+        }, config=config)
+        # Only human pauses are handled here. LangGraph owns every planning,
+        # search, evaluation, and stopping transition.
+        while state.get("__interrupt__"):
+            event = state["__interrupt__"][0].value
+            if event["kind"] == "query_review" and review_query:
+                response = review_query(parse_refinement(state["refinement"]))
+            elif event["kind"] == "search_approval" and approve:
+                response = approve(_decision(state["decision"]))
+            else:
+                raise PlannerError("The graph requested an unsupported approval.")
+            state = graph.invoke(Command(resume={"query": response}), config=config)
+        return _result(state["result"])

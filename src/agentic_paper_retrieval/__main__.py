@@ -7,9 +7,10 @@ import sys
 from pathlib import Path
 
 from agentic_paper_retrieval import __version__
-from agentic_paper_retrieval.agent import Decision, PlannerError, ResearchAgent, SearchStep
+from agentic_paper_retrieval.agent import ResearchAgent
 from agentic_paper_retrieval.models import Paper
 from agentic_paper_retrieval.ollama import OllamaPlanner
+from agentic_paper_retrieval.planning import Decision, PlannerError, QueryRefinement, SearchStep
 from agentic_paper_retrieval.sources.arxiv import ArxivSource
 from agentic_paper_retrieval.sources.base import SourceError
 
@@ -32,6 +33,33 @@ def _approve(decision: Decision) -> str | None:
     except EOFError:
         return None
     return None if answer == "/stop" else (answer or decision.query)
+
+
+def _show_refinement(plan: dict, *, file=None) -> None:
+    print(f"\nRefined question: {plan['refined_question']}", file=file)
+    print("Concepts: " + "; ".join(plan["concepts"]), file=file)
+    print("Suggested searches:", file=file)
+    for query in plan["search_queries"]:
+        print(f"  - {query}", file=file)
+    for label, key in (("Assumptions to review", "assumptions"), ("Clarifications to consider", "clarification_questions")):
+        if plan[key]:
+            print(label + ":", file=file)
+            for item in plan[key]:
+                print(f"  - {item}", file=file)
+    print(f"Reason: {plan['rationale']}", file=file)
+
+
+def _review_query(plan: QueryRefinement) -> str | None:
+    _show_refinement(plan.to_dict(), file=sys.stderr)
+    print(
+        "Enter to approve, type an updated research question with any clarification answers, or /stop: ",
+        end="", file=sys.stderr, flush=True,
+    )
+    try:
+        answer = input().strip()
+    except EOFError:
+        return None
+    return None if answer == "/stop" else (answer or plan.refined_question)
 
 
 def _progress(step: SearchStep, papers: tuple[Paper, ...]) -> None:
@@ -61,38 +89,47 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command")
     search = commands.add_parser("search", help="Search arXiv without a language model")
     research = commands.add_parser("research", help="Plan and refine searches using local Ollama")
-    for command in (search, research):
+    refine = commands.add_parser("refine", help="Improve a research question and preview keyword searches")
+    for command in (search, research, refine):
         command.add_argument("query", help="Research question or search keywords")
-        command.add_argument("--limit", type=_positive_limit, default=5, help="Papers per search (default: 5)")
         command.add_argument("--json", action="store_true", help="Print JSON to stdout")
         command.add_argument("--output", type=Path, help="Also save JSON to this file")
+    for command in (search, research):
+        command.add_argument("--limit", type=_positive_limit, default=5, help="Papers per search (default: 5)")
         command.add_argument("--cache-dir", type=Path, default=Path("data/cache/arxiv"))
     search.add_argument("--raw-query", action="store_true", help="Use arXiv field/Boolean syntax verbatim")
-    research.add_argument("--model", default=os.getenv("OLLAMA_MODEL"), help="Installed Ollama model (or OLLAMA_MODEL)")
-    research.add_argument("--ollama-url", default=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
+    for command in (research, refine):
+        command.add_argument("--model", default=os.getenv("OLLAMA_MODEL"), help="Installed Ollama model (or OLLAMA_MODEL)")
+        command.add_argument("--ollama-url", default=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
     research.add_argument("--max-rounds", type=int, choices=range(1, 6), default=3)
     research.add_argument("--auto", action="store_true", help="Allow searches within the round limit without human prompts")
     args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
         return 0
-    if args.command == "research":
+    if args.command in ("research", "refine"):
         if not args.model:
             parser.error("Choose an installed Ollama model with --model or OLLAMA_MODEL.")
+    if args.command == "research":
         if args.limit > 20:
             parser.error("Research mode supports at most 20 papers per round.")
         if not args.auto and not sys.stdin.isatty():
             parser.error("Interactive research needs a terminal. Use --auto for bounded searches without prompts.")
     try:
-        source = ArxivSource(cache_dir=args.cache_dir)
         if args.command == "search":
+            source = ArxivSource(cache_dir=args.cache_dir)
             payload = source.search(args.query, args.limit, raw_query=args.raw_query).to_dict()
+        elif args.command == "refine":
+            planner = OllamaPlanner(args.model, args.ollama_url)
+            payload = {"question": args.query, "refinement": planner.refine(args.query).to_dict()}
         else:
+            source = ArxivSource(cache_dir=args.cache_dir)
             planner = OllamaPlanner(args.model, args.ollama_url)
             print(f"Planning with {args.model}; up to {args.max_rounds} searches.", file=sys.stderr)
             payload = ResearchAgent(source, planner).run(
                 args.query, max_rounds=args.max_rounds, limit=args.limit,
                 approve=None if args.auto else _approve, on_results=_progress,
+                review_query=None if args.auto else _review_query,
             ).to_dict()
             payload["model"] = args.model
             payload["ollama_url"] = args.ollama_url
@@ -103,12 +140,20 @@ def main(argv: list[str] | None = None) -> int:
         if args.json:
             print(serialized, end="")
         else:
-            if args.command == "research":
+            if args.command == "refine":
+                _show_refinement(payload["refinement"])
+            elif args.command == "research":
+                print(f"Research question: {payload['effective_question']}")
                 print(f"Stopped: {payload['stop_reason']}\n{payload['rationale']}")
+                if payload["unresolved_clarifications"]:
+                    print("\nOpen clarifications:")
+                    for question in payload["unresolved_clarifications"]:
+                        print(f"  - {question}")
                 print("\nSelected papers:" if payload["selected_paper_ids"] else "\nRetrieved candidates (no shortlist selected):")
             else:
                 print(f"arXiv: {len(payload['papers'])} papers returned ({payload['total_results']} matches).")
-            _show_papers(payload["papers"], payload.get("selected_paper_ids", ()))
+            if args.command != "refine":
+                _show_papers(payload["papers"], payload.get("selected_paper_ids", ()))
             if args.output:
                 print(f"\nSaved JSON to {args.output}")
         return 0

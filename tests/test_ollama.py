@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from agentic_paper_retrieval.agent import PlannerError
 from agentic_paper_retrieval.ollama import OllamaPlanner, parse_decision
+from test_planning import refinement_data
 
 
 def response(decision):
@@ -13,6 +14,16 @@ def response(decision):
 
 
 class OllamaTests(unittest.TestCase):
+    def test_refiner_uses_original_question_and_a_dedicated_schema(self):
+        data = refinement_data()
+        with patch("agentic_paper_retrieval.ollama.urllib.request.urlopen", return_value=response(data)) as send:
+            plan = OllamaPlanner("local-model").refine("How can RAG reduce hallucinations?")
+            payload = json.loads(send.call_args.args[0].data)
+            context = json.loads(payload["messages"][1]["content"])
+            self.assertEqual(context["original_question"], "How can RAG reduce hallucinations?")
+            self.assertIn("search_queries", payload["format"]["required"])
+            self.assertEqual(plan.refined_question, data["refined_question"])
+
     def test_request_uses_structured_nonstreaming_local_chat(self):
         decision = {"action": "search", "query": "medical retrieval", "reason": "Find evidence", "selected_paper_ids": []}
         with patch("agentic_paper_retrieval.ollama.urllib.request.urlopen", return_value=response(decision)) as send:

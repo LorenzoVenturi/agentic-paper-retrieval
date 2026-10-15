@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentic-paper-retrieval"
-version = "0.2.0"
+version = "0.3.0"
 description = "Assisted, query-driven agentic RAG for research paper discovery"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["langgraph>=1.0,<2", "typing-extensions>=4.7,<5"]
 
 [project.scripts]
 paper-retriever = "agentic_paper_retrieval.__main__:main"
