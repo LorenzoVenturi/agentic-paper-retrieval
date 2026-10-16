@@ -3,6 +3,13 @@ A simple Agentic Framework for retrieving arXiv paper relevant to a query, which
 
 A small local workspace for finding research papers. Start with a question, let a local model help you sharpen it, then explore arXiv together. You can edit the question and approve each search along the way.
 
+<picture>
+  <source media="(prefers-reduced-motion: reduce)" srcset="docs/images/walkthrough.png">
+  <img src="docs/images/walkthrough.gif" alt="Illustrated workflow: review an improved question, approve an arXiv search, inspect papers, refine the search, and build a shortlist." width="1200">
+</picture>
+
+*An illustrated walkthrough of the workspace. [View the still image](docs/images/walkthrough.png).*
+
 The idea is to make the first part of a literature search a little easier, while keeping a record of how you found each paper.
 
 Built with Python, LangGraph, and Ollama. This is an early version: query improvement, paper search, and shortlisting work today. Reading full papers and answering questions with citations come later.
@@ -124,5 +131,7 @@ python -m build
 ```
 
 Tests use fictional papers and mocked model responses, so they don't need arXiv or a running Ollama server. The UI tests open temporary localhost ports. GitHub Actions builds the package and runs the tests on Python 3.11 and 3.12.
+
+To redraw the README illustration, run `python scripts/make_readme_preview.py` with Pillow installed.
 
 Next up: compare the agent's results with a direct search, add manual paper selection, then work on full-text retrieval and answers with citations.
