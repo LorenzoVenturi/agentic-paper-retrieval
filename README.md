@@ -1,4 +1,5 @@
 # Paper Retriever
+A simple Agentic Framework for retrieving arXiv paper relevant to a query, which can be improved via LLM.
 
 A small local workspace for finding research papers. Start with a question, let a local model help you sharpen it, then explore arXiv together. You can edit the question and approve each search along the way.
 
