@@ -1,4 +1,4 @@
-"""Search papers directly or run an assisted Ollama search agent."""
+"""Command-line entry points."""
 
 import argparse
 import json
@@ -90,6 +90,10 @@ def main(argv: list[str] | None = None) -> int:
     search = commands.add_parser("search", help="Search arXiv without a language model")
     research = commands.add_parser("research", help="Plan and refine searches using local Ollama")
     refine = commands.add_parser("refine", help="Improve a research question and preview keyword searches")
+    ui = commands.add_parser("ui", help="Open the local browser research interface")
+    ui.add_argument("--port", type=int, default=8000)
+    ui.add_argument("--ollama-url", default=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
+    ui.add_argument("--cache-dir", type=Path, default=Path("data/cache/arxiv"))
     for command in (search, research, refine):
         command.add_argument("query", help="Research question or search keywords")
         command.add_argument("--json", action="store_true", help="Print JSON to stdout")
@@ -106,6 +110,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not args.command:
         parser.print_help()
+        return 0
+    if args.command == "ui":
+        if not 1 <= args.port <= 65535:
+            parser.error("Choose a port between 1 and 65535.")
+        from agentic_paper_retrieval.ui import serve
+        try:
+            serve(args.port, args.ollama_url, args.cache_dir)
+        except OSError as exc:
+            print(f"Could not start the local UI: {exc}. Try --port 8001.", file=sys.stderr)
+            return 1
         return 0
     if args.command in ("research", "refine"):
         if not args.model:

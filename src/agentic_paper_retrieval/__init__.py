@@ -1,3 +1,3 @@
-"""Assisted, query-driven agentic RAG for research paper discovery."""
+"""Find research papers with a local model and human guidance."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

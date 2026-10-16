@@ -33,7 +33,6 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(research.papers, (first, second))
         self.assertEqual(research.selected_paper_ids, (second.id, first.id))
         self.assertEqual(research.stop_reason, "model_finished")
-        # The next decision sees the actual papers from the previous search.
         self.assertEqual(planner.decide.call_args_list[0].args[2], (first,))
         self.assertEqual(planner.decide.call_args_list[0].args[0], "A clearer research question")
         self.assertEqual(research.question, "A question")

@@ -1,4 +1,4 @@
-"""arXiv Atom API adapter with a daily cache and serial request pacing."""
+"""arXiv search and feed parsing."""
 
 import hashlib
 import re
@@ -28,7 +28,7 @@ _last_request: float | None = None
 
 
 def keyword_query(query: str) -> str:
-    """Convert words/quoted phrases to an AND query; this is lexical search."""
+    """Join keywords and quoted phrases into an arXiv AND query."""
     terms = [
         phrase or word
         for phrase, word in re.findall(r'"([^\"]+)"|([\w][\w.+#-]*)', query)
@@ -46,7 +46,7 @@ def _text(element: ET.Element, path: str) -> str:
 
 
 def parse_feed(data: bytes, query: str, source_query: str) -> SearchResult:
-    """Normalize real Atom entries; distinguish an empty result from an error."""
+    """Read an arXiv Atom feed into search results."""
     try:
         root = ET.fromstring(data)
     except ET.ParseError as exc:

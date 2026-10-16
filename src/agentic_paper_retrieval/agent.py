@@ -1,4 +1,4 @@
-"""LangGraph workflow for query refinement and assisted paper discovery."""
+"""LangGraph research workflow."""
 
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -94,10 +94,29 @@ class ResearchAgent:
         self.source = source
         self.planner = planner
 
+    @staticmethod
+    def initial_state(
+        question: str, *, max_rounds: int = 3, limit: int = 5,
+        review_query: bool = True, approve_searches: bool = True,
+    ) -> ResearchState:
+        """Validate settings and create the initial research state."""
+        question = question.strip()
+        if not question:
+            raise ValueError("The research question cannot be empty.")
+        if not 1 <= max_rounds <= 5 or not 1 <= limit <= 20:
+            raise ValueError("Use 1–5 search rounds and 1–20 results per round.")
+        return {
+            "question": question, "query_review": "auto",
+            "review_query": review_query, "approve_searches": approve_searches,
+            "max_rounds": max_rounds, "limit": limit, "steps": [], "papers": [],
+            "seen_queries": [], "selected_paper_ids": [], "stop_reason": "",
+            "rationale": "", "model_assessment": "",
+        }
+
     def build_graph(
         self, *, on_results: Callable[[SearchStep, tuple[Paper, ...]], None] | None = None,
     ):
-        """Build an inspectable graph with checkpoints held in memory."""
+        """Build the graph with an in-memory checkpointer."""
         def refine_query(state: ResearchState) -> dict:
             plan = self.planner.refine(state["question"])
             return {
@@ -108,7 +127,7 @@ class ResearchAgent:
         def review_query(state: ResearchState) -> dict:
             if not state["review_query"]:
                 return {"query_review": "auto"}
-            # Resuming approval must not repeat inference or run a search.
+            # Interrupt nodes replay on resume, so model calls belong elsewhere.
             response = interrupt({
                 "kind": "query_review", "question": state["question"],
                 "refinement": state["refinement"],
@@ -128,7 +147,6 @@ class ResearchAgent:
             }
 
         def replan_query(state: ResearchState) -> dict:
-            # Regenerate keywords after a researcher changes the question.
             return {"refinement": self.planner.refine(state["effective_question"]).to_dict()}
 
         def prepare_search(state: ResearchState) -> dict:
@@ -236,22 +254,14 @@ class ResearchAgent:
         review_query: Callable[[QueryRefinement], str | None] | None = None,
         on_results: Callable[[SearchStep, tuple[Paper, ...]], None] | None = None,
     ) -> ResearchResult:
-        question = question.strip()
-        if not question:
-            raise ValueError("The research question cannot be empty.")
-        if not 1 <= max_rounds <= 5 or not 1 <= limit <= 20:
-            raise ValueError("Use 1–5 search rounds and 1–20 results per round.")
+        initial = self.initial_state(
+            question, max_rounds=max_rounds, limit=limit,
+            review_query=review_query is not None, approve_searches=approve is not None,
+        )
         graph = self.build_graph(on_results=on_results)
         config = {"configurable": {"thread_id": str(uuid4())}, "recursion_limit": 8 * max_rounds + 15}
-        state = graph.invoke({
-            "question": question, "query_review": "auto",
-            "review_query": review_query is not None, "approve_searches": approve is not None,
-            "max_rounds": max_rounds, "limit": limit, "steps": [], "papers": [],
-            "seen_queries": [], "selected_paper_ids": [], "stop_reason": "", "rationale": "",
-            "model_assessment": "",
-        }, config=config)
-        # Only human pauses are handled here. LangGraph owns every planning,
-        # search, evaluation, and stopping transition.
+        state = graph.invoke(initial, config=config)
+        # Resume human reviews; search iteration stays inside the graph.
         while state.get("__interrupt__"):
             event = state["__interrupt__"][0].value
             if event["kind"] == "query_review" and review_query:

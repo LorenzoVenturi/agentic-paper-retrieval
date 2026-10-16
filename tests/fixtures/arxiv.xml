@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Synthetic metadata for offline tests, not real papers. -->
+<!-- Fictional papers used in tests. -->
 <feed xmlns="http://www.w3.org/2005/Atom"
       xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/"
       xmlns:arxiv="http://arxiv.org/schemas/atom">

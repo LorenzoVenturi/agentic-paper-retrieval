@@ -1,4 +1,4 @@
-"""Source-independent paper metadata and search results."""
+"""Paper and search-result records."""
 
 from dataclasses import asdict, dataclass
 

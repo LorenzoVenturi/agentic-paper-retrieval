@@ -39,14 +39,14 @@ Research query + filters
 | Orchestration | Track workflow state, bounded retries, human decisions, and search iterations. |
 | Evaluation | Measure retrieval quality, duplicate handling, and citation support on curated queries. |
 
-## Implemented first slice
+## What works today
 
 - `models.py` defines normalized paper metadata and search results.
 - `planning.py` defines query refinements, decisions, search traces, and strict refinement validation.
 - `sources/base.py` defines the source interface; `sources/arxiv.py` implements keyword/raw search, stable arXiv IDs, version deduplication, a 24-hour cache, and request pacing.
 - `ollama.py` uses separate structured-output prompts to improve the initial question and to evaluate retrieved evidence. Refinements contain a rewritten question, concepts, keyword alternatives, assumptions, and clarification questions. Subsequent decisions can request another search or finish with retrieved paper IDs.
 - `agent.py` implements the workflow as a LangGraph `StateGraph`, with typed state, conditional edges, approval interrupts, and in-memory checkpoints. It enforces search limits, repeated-query detection, and paper-ID validation. Source-supplied relevance order is retained; the model can order its final shortlist.
-- The CLI exposes `search`, `refine`, and `research`, readable output, and JSON exports. Direct search works without Ollama; standalone refinement does not call the paper source.
+- The CLI exposes `search`, `refine`, `research`, and the local browser `ui`, with readable output and JSON exports. Direct search works without Ollama; standalone refinement does not call the paper source.
 
 ## LangGraph workflow
 
@@ -76,6 +76,19 @@ Human review and search approval use separate interrupting nodes. Model calls an
 The graph permits at most five source searches, with three by default. It makes one initial refinement call, at most one extra call after a question edit, and one evaluation call after each search. The final evaluation is constrained to finish once the source-search budget is spent.
 
 The graph supplies the stopping explanation; model-generated assessments are exported separately. Open clarification questions remain explicit in the result until a new query-refinement plan changes them. The evaluator cannot clear them by asserting that retrieved papers answered the researcher's intent.
+
+## Local browser interface
+
+`ui.py` serves `static/` and a small JSON API from a loopback-only Python HTTP server. Each browser session owns a compiled research graph and an in-memory checkpoint thread. A background executor advances the graph until a query-review interrupt, a search-approval interrupt, or completion. Browser approvals resume it with `Command(resume=...)`.
+
+- `GET /api/config` checks the local Ollama connection and lists installed models.
+- `POST /api/sessions` starts query improvement with explicit round/result limits.
+- `GET /api/sessions/{id}` returns progress, the pending review, papers, and results.
+- `POST /api/sessions/{id}/respond` resumes the current review. A unique review ID prevents duplicate or stale approvals.
+- `POST /api/sessions/{id}/cancel` stops at the next workflow boundary after the current operation.
+- `GET /api/sessions/{id}/export` downloads the final result or current partial session as JSON.
+
+The browser polls for progress and retains its session ID in tab-scoped storage for reloads. Questions, checkpoint state, and session history stay in server memory. The UI does not expose filesystem paths or allow browser requests to configure arbitrary model endpoints. Source queries still go to arXiv; model inference uses the configured Ollama server.
 
 The first model provider is local Ollama and the first paper API is arXiv. Embedding models and index storage remain undecided. Source metadata and abstract excerpts inform search refinement; this is not yet a RAG answer-generation pipeline.
 

@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f3ed">
+  <meta name="description" content="Follow your curiosity. Sharpen a research question and discover your next useful paper with a local AI research partner.">
+  <title>Paper Retriever · Follow your curiosity</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#question">Skip to your research question</a>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Paper Retriever home">
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M7 7h13l5 5v15H7V7Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M20 7v6h5M11 17h10M11 21h7M4 4h13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span>
+      <span>paper retriever<span class="brand-caption">FOLLOW YOUR CURIOSITY</span></span>
+    </a>
+    <div class="connection">
+      <span class="local-label"><span aria-hidden="true">✳</span> YOUR LOCAL RESEARCH CLUB</span>
+      <button id="connection" class="connection-button" type="button" title="Refresh model connection"><span class="status-dot" aria-hidden="true"></span><span id="connection-text">Checking model…</span><span class="refresh-icon" aria-hidden="true">↻</span></button>
+    </div>
+  </header>
+
+  <main class="page">
+    <div class="page-heading">
+      <div class="hero-copy">
+        <p class="eyebrow hero-eyebrow"><span class="eyebrow-line" aria-hidden="true"></span> BIG IDEAS START WITH A QUESTION</p>
+        <h1>Go down a<br><span class="hero-highlight">better rabbit hole.<svg viewBox="0 0 600 20" preserveAspectRatio="none" aria-hidden="true"><path d="M4 13Q190 0 335 10T594 7"/></svg></span></h1>
+        <p class="intro">Turn that “what if?” into a sharper question<br class="desktop-break"> and a reading list worth getting lost in.</p>
+      </div>
+      <div class="hero-art" aria-hidden="true">
+        <svg class="orbit-art" viewBox="0 0 300 250" fill="none">
+          <ellipse cx="150" cy="125" rx="124" ry="55" transform="rotate(-28 150 125)" stroke="currentColor" stroke-width="1.2"/>
+          <ellipse cx="150" cy="125" rx="124" ry="55" transform="rotate(32 150 125)" stroke="currentColor" stroke-width="1.2"/>
+          <circle cx="150" cy="125" r="70" stroke="currentColor" stroke-width="1.2" stroke-dasharray="3 7"/>
+          <circle cx="48" cy="175" r="11" fill="#d7fb61" stroke="currentColor" stroke-width="1.5"/>
+          <circle cx="251" cy="177" r="7" fill="#ad94ef" stroke="currentColor" stroke-width="1.5"/>
+          <circle cx="230" cy="49" r="5" fill="#ffad7f"/>
+        </svg>
+        <div class="hero-asterisk">✳</div>
+        <span class="orbit-tag tag-question">a little curiosity ↗</span>
+        <span class="orbit-tag tag-discovery">a new perspective ✦</span>
+      </div>
+    </div>
+
+    <div class="workspace-meta"><span><span class="mini-star" aria-hidden="true">✦</span> YOUR NEXT DISCOVERY STARTS HERE</span><span class="source-label">Searching <strong>arXiv</strong><span class="meta-divider" aria-hidden="true">/</span> Guided by you</span></div>
+    <div id="notice" class="notice" role="alert" hidden></div>
+
+    <div class="workspace">
+      <aside class="sidebar">
+        <section class="card question-card">
+          <div class="question-card-heading"><span class="section-kicker">THE STARTING POINT</span><span class="card-spark" aria-hidden="true">↗</span></div>
+          <h2>Start with a spark.</h2>
+          <p class="question-intro">What’s on your research radar?</p>
+          <form id="research-form">
+            <label class="sr-only" for="question">Your research question</label>
+            <div class="question-input-wrap">
+              <textarea id="question" name="question" rows="5" maxlength="4000" placeholder="How can RAG reduce hallucinations in medical question answering?" aria-describedby="question-hint" required></textarea>
+              <div class="input-meta"><span id="question-count">0 / 4,000</span><button id="clear-question" class="clear-question" type="button" disabled>Clear</button></div>
+            </div>
+            <div class="example-row"><span>A little inspiration</span><button type="button" class="example" data-question="How can RAG reduce hallucinations in medical question answering?">Medical RAG <span aria-hidden="true">↗</span></button><button type="button" class="example" data-question="Which methods improve retrieval for long-context language models?">Long-context LMs <span aria-hidden="true">↗</span></button><button type="button" class="example" data-question="How do language model agents plan and evaluate multi-step research tasks?">AI agents <span aria-hidden="true">↗</span></button></div>
+            <div class="settings">
+              <div class="settings-heading"><span class="section-kicker">MAKE IT YOURS</span><span aria-hidden="true">⚙</span></div>
+              <label for="model">Your local model</label>
+              <select id="model" name="model" required><option value="">Connecting to Ollama…</option></select>
+              <div class="settings-grid"><div><label for="rounds">Search rounds</label><select id="rounds" name="rounds"><option value="1">1 round</option><option value="2">2 rounds</option><option value="3" selected>3 rounds</option><option value="4">4 rounds</option><option value="5">5 rounds</option></select></div><div><label for="limit">Papers per search</label><select id="limit" name="limit"><option value="3">3 papers</option><option value="5" selected>5 papers</option><option value="10">10 papers</option><option value="20">20 papers</option></select></div></div>
+            </div>
+            <button id="start" class="button primary start-button" type="submit" disabled><span>Improve my question</span><span class="button-arrow" aria-hidden="true">↗</span></button>
+            <p id="question-hint" class="shortcut-hint">A shortcut to your next idea <kbd id="start-shortcut">⌘ Enter</kbd></p>
+          </form>
+          <p class="review-note"><span aria-hidden="true">✓</span>Your question. Your call. Approve every search.</p>
+        </section>
+        <section id="trail-card" class="trail-card" hidden><div class="trail-header"><h2>The research trail</h2><span id="trail-count" class="subtle-label"></span></div><ol id="trail" class="trail"></ol></section>
+        <p class="local-note"><span aria-hidden="true">◉</span><span>Your model runs locally. Search terms go to arXiv. Sessions last while this server runs.</span></p>
+      </aside>
+
+      <section class="results-workspace" aria-label="Research results">
+        <div class="workspace-toolbar"><div class="workspace-label"><span class="workspace-symbol" aria-hidden="true">✳</span><h2>Your discovery space</h2></div><div class="toolbar-actions"><button id="stop" class="button quiet small" type="button" hidden>Stop research</button><button id="export" class="button outline small" type="button" disabled><span aria-hidden="true">↓</span> Export JSON</button></div></div>
+        <ol class="stages" aria-label="Research progress"><li id="stage-refine" class="active" aria-current="step"><span>01</span>Sharpen the question</li><li id="stage-search"><span>02</span>Follow the evidence</li><li id="stage-review"><span>03</span>Meet your reading list</li></ol>
+        <div class="workspace-status"><span id="session-badge" class="session-badge"><span aria-hidden="true"></span><span id="session-label">Ready when you are</span></span><span id="workspace-count">No papers yet. Plenty of possibilities.</span></div>
+        <div id="live-status" class="live-status" role="status" aria-live="polite" hidden><span class="spinner" aria-hidden="true"></span><span id="live-message"></span><span class="working-dots" aria-hidden="true"><i></i><i></i><i></i></span></div>
+
+        <div id="empty" class="empty-state card">
+          <span class="empty-sticker" aria-hidden="true">GOOD QUESTIONS<br>GO PLACES. ↗</span>
+          <div class="paper-illustration" aria-hidden="true">
+            <span class="illustration-orbit"></span>
+            <div class="illustration-sheet back"><span>WHAT IF?</span></div>
+            <div class="illustration-sheet front"><span class="illustration-label">THE NEXT BIG IDEA</span><i></i><i></i><i></i><div class="illustration-chart"><span></span><span></span><span></span><span></span><span></span></div><i></i><i></i></div>
+            <span class="illustration-spark">✳</span><span class="illustration-dot"></span>
+          </div>
+          <p class="eyebrow">A LITTLE CURIOSITY GOES A LONG WAY</p><h2>Your next “aha!”<br>is out there.</h2><p>Bring a question. We’ll help you sharpen it,<br class="desktop-break"> explore the literature, and find what clicks.</p>
+          <div class="empty-principles"><div><span>01</span><strong>Get specific.</strong><p>Find the right question.</p></div><div><span>02</span><strong>Go exploring.</strong><p>You guide every search.</p></div><div><span>03</span><strong>Connect the dots.</strong><p>Build your reading list.</p></div></div>
+        </div>
+
+        <div id="review-panel"></div>
+        <div id="overview"></div>
+        <section id="papers-section" hidden><div class="papers-heading"><div><p id="papers-eyebrow" class="eyebrow">FRESH FROM THE LITERATURE</p><h2 id="papers-title">Retrieved papers</h2><p id="papers-summary" class="muted"></p></div><div id="paper-tabs" class="paper-tabs" hidden><button id="tab-shortlist" type="button" aria-pressed="true">Shortlist</button><button id="tab-all" type="button" aria-pressed="false">All papers</button></div></div><div id="paper-list" class="paper-list"></div></section>
+        <div id="completion" class="completion" hidden></div>
+      </section>
+    </div>
+    <footer><span>Stay curious. <span class="footer-spark" aria-hidden="true">✳</span> Keep digging.</span><span>Local intelligence <span aria-hidden="true">/</span> Real papers <span aria-hidden="true">/</span> Your direction</span></footer>
+  </main>
+</body>
+</html>

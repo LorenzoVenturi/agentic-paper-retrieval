@@ -1,4 +1,4 @@
-"""Validated query plans and decisions shared by the model and workflow."""
+"""Query plans and search decisions."""
 
 from dataclasses import asdict, dataclass
 from typing import Protocol
@@ -81,7 +81,7 @@ REFINEMENT_SCHEMA = {
 
 
 def parse_refinement(data: object) -> QueryRefinement:
-    """Validate model output even if a server ignores its JSON schema."""
+    """Check a model's query plan before using it."""
     if not isinstance(data, dict) or set(data) != set(REFINEMENT_SCHEMA["required"]):
         raise PlannerError("The model returned an invalid query refinement object.")
     values = {}

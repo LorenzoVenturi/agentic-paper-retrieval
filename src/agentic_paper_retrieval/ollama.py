@@ -1,4 +1,4 @@
-"""Local Ollama planner using schema-constrained chat responses."""
+"""Query planning through Ollama."""
 
 import json
 import urllib.error
@@ -106,8 +106,7 @@ class OllamaPlanner:
             "required": ["action", "query", "reason", "selected_paper_ids"],
             "additionalProperties": False,
         }
-        # Bound context growth for local models. Include recent results first;
-        # earlier queries and IDs remain in the full action history.
+        # Limit prompt size on local models; keep recent papers and the full search history.
         visible = papers[-20:]
         context = {
             "research_question": question,

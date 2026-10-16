@@ -31,6 +31,7 @@ jobs:
           .ci-venv/bin/paper-retriever --version
           .ci-venv/bin/paper-retriever --help
           .ci-venv/bin/paper-retriever refine --help
+          .ci-venv/bin/paper-retriever ui --help
           .ci-venv/bin/python -m agentic_paper_retrieval --version
       - name: Run offline behavioral tests
         env:
