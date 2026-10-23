@@ -10,11 +10,36 @@ from agentic_paper_retrieval.__main__ import main
 from agentic_paper_retrieval.sources.arxiv import parse_feed
 from agentic_paper_retrieval.sources.base import SourceError
 from test_planning import refinement_data
+from test_library import FixtureEmbedder
+from test_agent import plan
 
 FEED = (Path(__file__).parent / "fixtures/arxiv.xml").read_bytes()
 
 
 class CliTests(unittest.TestCase):
+    def test_explicit_auto_save_and_library_commands_share_persistent_collection(self):
+        from agentic_paper_retrieval.planning import Decision
+
+        with tempfile.TemporaryDirectory() as directory, \
+             patch("agentic_paper_retrieval.__main__.ArxivSource") as source, \
+             patch("agentic_paper_retrieval.__main__.OllamaPlanner") as planner, \
+             patch("agentic_paper_retrieval.__main__.OllamaEmbedder", return_value=FixtureEmbedder()):
+            source.return_value.search.return_value = parse_feed(FEED, "q", "q")
+            planner.return_value.refine.return_value = plan()
+            planner.return_value.decide.return_value = Decision("finish", "", "Relevant", ("arxiv:2501.99999",))
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(["research", "q", "--model", "test", "--auto", "--save-shortlist",
+                                       "--max-rounds", "1", "--library-dir", directory, "--json"]), 0)
+            self.assertEqual(json.loads(output.getvalue())["library_save"]["added_count"], 1)
+            for action, extra in (("list", []), ("search", ["grounding models"]), ("remove", ["arxiv:2501.99999"])):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    self.assertEqual(main(["library", action, *extra, "--library-dir", directory, "--json"]), 0)
+                data = json.loads(output.getvalue())
+                if action != "remove":
+                    self.assertEqual(data["papers"][0]["id"], "arxiv:2501.99999")
+
     def test_research_command_runs_planning_search_and_selection(self):
         decisions = iter([
             {**refinement_data(), "search_queries": ["retrieval evidence"]},
@@ -33,7 +58,7 @@ class CliTests(unittest.TestCase):
              patch("urllib.request.urlopen", side_effect=send) as requests, \
              patch("agentic_paper_retrieval.sources.arxiv._last_request", None), \
              contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            exit_code = main(["research", "Find retrieval methods", "--model", "test-model", "--auto", "--max-rounds", "1", "--json", "--cache-dir", directory])
+            exit_code = main(["research", "Find retrieval methods", "--model", "test-model", "--auto", "--max-rounds", "1", "--json", "--cache-dir", directory, "--library-dir", str(Path(directory) / "library")])
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertEqual(requests.call_count, 3)
@@ -75,9 +100,9 @@ class CliTests(unittest.TestCase):
              patch("urllib.request.urlopen", side_effect=send) as requests, \
              patch("agentic_paper_retrieval.sources.arxiv._last_request", None), \
              patch("sys.stdin.isatty", return_value=True), \
-             patch("builtins.input", side_effect=["Focus on hallucination evaluation benchmarks", ""]), \
+             patch("builtins.input", side_effect=["Focus on hallucination evaluation benchmarks", "", ""]), \
              contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            code = main(["research", "original question", "--model", "test-model", "--max-rounds", "1", "--json", "--cache-dir", directory])
+            code = main(["research", "original question", "--model", "test-model", "--max-rounds", "1", "--json", "--cache-dir", directory, "--library-dir", str(Path(directory) / "library")])
         payload = json.loads(stdout.getvalue())
         self.assertEqual(code, 0)
         self.assertEqual(requests.call_count, 4)

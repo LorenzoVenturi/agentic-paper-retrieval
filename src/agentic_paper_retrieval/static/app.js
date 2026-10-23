@@ -10,6 +10,11 @@ let paperView = "shortlist";
 let renderedPapersKey = null;
 const expandedAbstracts = new Set();
 const seenPaperIds = new Set();
+let savePanelKey = null;
+let saveSelectionSession = null;
+const papersToSave = new Set();
+let libraryOffset = 0;
+let libraryLoading = false;
 const terminal = (value) => ["complete", "stopped", "error"].includes(value?.status);
 
 function element(tag, options = {}, children = []) {
@@ -209,7 +214,8 @@ function renderPapers(data) {
   const byId = new Map(papers.map((paper) => [paper.id, paper]));
   const visible = ids.length && paperView === "shortlist" ? ids.map((id) => byId.get(id)).filter(Boolean) : papers;
   // Rebuilding unchanged cards would reset keyboard focus.
-  const renderKey = JSON.stringify([visible, ids, paperView, done, done ? data.status : null]);
+  const origins = data.result?.paper_origins || data.paper_origins || {};
+  const renderKey = JSON.stringify([visible, ids, origins, paperView, done, done ? data.status : null]);
   if (renderKey === renderedPapersKey) return;
   renderedPapersKey = renderKey;
   const list = $("paper-list");
@@ -228,6 +234,8 @@ function renderPapers(data) {
       element("span", { text: (paper.published || "").slice(0, 4) }),
     ]);
     if (ids.includes(paper.id)) meta.append(element("span", { className: "paper-suggested", text: "Suggested" }));
+    if (origins[paper.id]?.includes("library")) meta.append(element("span", { className: "paper-origin", text: "From your library" }));
+    if (origins[paper.id]?.includes("arxiv")) meta.append(element("span", { className: "paper-origin", text: "Found on arXiv" }));
     const authors = paper.authors || [];
     const abstract = element("p", { className: `paper-abstract${expandedAbstracts.has(paper.id) ? " expanded" : ""}`, text: paper.abstract || "No abstract available." });
     const toggle = element("button", { type: "button", text: expandedAbstracts.has(paper.id) ? "Less detail ↑" : "Read abstract ↓", "aria-expanded": String(expandedAbstracts.has(paper.id)) });
@@ -250,6 +258,112 @@ function renderPapers(data) {
     card.addEventListener("animationend", () => card.classList.remove("paper-new"), { once: true });
     list.append(card);
   });
+}
+
+async function loadLibrary() {
+  if (libraryLoading) return;
+  libraryLoading = true;
+  $("library-status").textContent = "Loading saved papers…";
+  $("library-prev").disabled = $("library-next").disabled = true;
+  try {
+    const data = await api(`/api/library?limit=10&offset=${libraryOffset}`);
+    if (!data.papers.length && libraryOffset > 0) {
+      libraryOffset = Math.max(0, libraryOffset - 10);
+      libraryLoading = false;
+      return loadLibrary();
+    }
+    $("library-status").textContent = data.total
+      ? `${libraryOffset + 1}–${libraryOffset + data.papers.length} of ${data.total} saved papers`
+      : "No papers saved yet. You can save papers after a search finishes.";
+    $("library-list").replaceChildren(...data.papers.map((paper) => {
+      const remove = element("button", { type: "button", className: "button quiet small", text: "Remove from library", "aria-label": `Remove ${paper.title} from library` });
+      remove.addEventListener("click", async () => {
+        remove.disabled = true;
+        try { await api("/api/library/remove", { paper_id: paper.id }); await loadLibrary(); }
+        catch (error) { showNotice(error.message); remove.disabled = false; }
+      });
+      return element("article", { className: "library-paper" }, [
+        element("h3", {}, [paperLink(paper.title, paper.url)]),
+        element("p", { text: `Published ${(paper.published || "").slice(0, 10)}` }),
+        element("p", { className: "library-question", text: `Saved for: ${paper.saved_from_question}` }), remove,
+      ]);
+    }));
+    $("library-prev").disabled = libraryOffset === 0;
+    $("library-next").disabled = libraryOffset + data.papers.length >= data.total;
+  } catch (error) {
+    $("library-status").textContent = error.message;
+  } finally { libraryLoading = false; }
+}
+
+async function savePapers(skip = false) {
+  if (posting || !session || session.library_save?.status === "saving") return;
+  const id = session.id;
+  posting = true;
+  controls();
+  $("save-panel").querySelectorAll("button, input").forEach((input) => { input.disabled = true; });
+  try {
+    const data = await api(`/api/sessions/${id}/save`, { paper_ids: skip ? [] : [...papersToSave] });
+    if (session?.id === id) applySession(data);
+  } catch (error) { showNotice(error.message); }
+  finally {
+    posting = false;
+    savePanelKey = null;
+    if (session) renderSave(session);
+    controls();
+  }
+}
+
+function renderSave(data) {
+  const root = $("save-panel");
+  const papers = data.result?.papers || data.papers;
+  root.hidden = !terminal(data) || !papers.length;
+  if (root.hidden) return;
+  const save = data.library_save || { status: "offered" };
+  const key = `${data.id}:${save.status}`;
+  if (key === savePanelKey) return;
+  savePanelKey = key;
+  root.replaceChildren();
+  if (save.status === "saved" || save.status === "skipped") {
+    root.append(element("h2", { text: save.status === "saved" ? "Saved for your next question." : "No papers saved." }),
+      element("p", { text: save.status === "saved"
+        ? `${save.saved_paper_ids.length} papers are in your library. Future searches will look for relevant matches.`
+        : "Your results remain available in this session. You can still export them as JSON." }));
+    if (save.status === "saved" && !$("library-panel").hidden) loadLibrary();
+    return;
+  }
+  root.append(element("p", { className: "eyebrow", text: "KEEP THE USEFUL PAPERS" }),
+    element("h2", { text: "Save papers for future research?" }),
+    element("p", { text: "Choose papers to keep in your local library. Each new question searches their titles and abstracts for relevant matches." }));
+  if (save.status === "saving") {
+    root.append(element("p", { role: "status", text: "Saving your selected papers…" }));
+    return;
+  }
+  if (saveSelectionSession !== data.id) {
+    saveSelectionSession = data.id;
+    papersToSave.clear();
+    (data.result?.selected_paper_ids || []).forEach((id) => papersToSave.add(id));
+  }
+  if (save.error) root.append(element("p", { className: "notice", role: "alert", text: save.error }));
+  const saveButton = element("button", { type: "button", className: "button primary" });
+  const updateButton = () => {
+    saveButton.textContent = `Save selected (${papersToSave.size})`;
+    saveButton.disabled = !papersToSave.size || papersToSave.size > 100 || posting;
+  };
+  const choices = element("div", { className: "save-choices" }, papers.map((paper) => {
+    const checkbox = element("input", { type: "checkbox", value: paper.id });
+    checkbox.checked = papersToSave.has(paper.id);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) papersToSave.add(paper.id); else papersToSave.delete(paper.id);
+      updateButton();
+    });
+    return element("label", { className: "save-choice" }, [checkbox, element("span", { text: paper.title })]);
+  }));
+  root.append(element("details", {}, [element("summary", { text: `Choose from ${papers.length} retrieved papers (up to 100). Shortlist preselected.` }), choices]));
+  const skipButton = element("button", { type: "button", className: "button quiet", text: "Skip saving" });
+  skipButton.addEventListener("click", () => savePapers(true));
+  saveButton.addEventListener("click", () => savePapers());
+  root.append(element("div", { className: "save-actions" }, [saveButton, skipButton]));
+  updateButton();
 }
 
 function renderTrail(data) {
@@ -296,6 +410,10 @@ function applySession(data, force = false) {
   renderOverview(data);
   renderPapers(data);
   renderTrail(data);
+  renderSave(data);
+  const warnings = [...new Set(data.steps.flatMap((step) => [step.library_error, step.source_error]).filter(Boolean))];
+  $("source-notice").hidden = !warnings.length;
+  $("source-notice").textContent = warnings.length ? `Search coverage is incomplete. ${warnings.join(" ")}` : "";
   $("completion").hidden = !terminal(data);
   $("completion").replaceChildren();
   if (data.result) {
@@ -358,9 +476,17 @@ $("export").addEventListener("click", () => {
 });
 $("tab-shortlist").addEventListener("click", () => { paperView = "shortlist"; if (session) renderPapers(session); });
 $("tab-all").addEventListener("click", () => { paperView = "all"; if (session) renderPapers(session); });
+$("library-toggle").addEventListener("click", () => {
+  const open = $("library-panel").hidden;
+  $("library-panel").hidden = !open;
+  $("library-toggle").setAttribute("aria-expanded", String(open));
+  if (open) loadLibrary();
+});
+$("library-prev").addEventListener("click", () => { if (!libraryLoading) { libraryOffset = Math.max(0, libraryOffset - 10); loadLibrary(); } });
+$("library-next").addEventListener("click", () => { if (!libraryLoading) { libraryOffset += 10; loadLibrary(); } });
 
 setInterval(async () => {
-  if (!session || terminal(session) || polling) return;
+  if (!session || (terminal(session) && session.library_save?.status !== "saving") || polling) return;
   polling = true;
   const id = session.id;
   try { const data = await api(`/api/sessions/${id}`); if (session?.id === id) applySession(data); }

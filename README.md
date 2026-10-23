@@ -36,6 +36,7 @@ If the Ollama app is already running its server, you can skip that step. Back in
 
 ```bash
 ollama pull qwen3:4b
+ollama pull embeddinggemma
 paper-retriever ui
 ```
 
@@ -50,13 +51,18 @@ Try a question like:
 1. Enter your question and click **Improve my question**.
 2. Read the suggested wording, concepts, and search directions. Edit anything that needs more context.
 3. Approve the search keywords, or change them before they go to arXiv.
-4. Browse the papers and abstracts. The model may suggest another search before putting together a shortlist.
+4. Browse the papers and abstracts. Each approved round searches arXiv and your saved library in parallel. The model may suggest another search before putting together a shortlist.
+5. When research finishes, choose papers in **Save papers for future research?**, then click **Save selected** or **Skip saving**. The shortlist is preselected; you can choose other retrieved papers too.
 
 Editing the research question creates a fresh search plan. By default, a session allows three searches; you can choose between one and five.
 
 **Export JSON** saves the papers, your original and edited questions, and the search history. It also works before a session finishes. **Stop research** takes effect after the current model or search operation.
 
-Your model runs locally. Search terms are sent to arXiv. Sessions stay in memory: refreshing the same browser tab restores the session while the server is running, but restarting the server clears it.
+Your model runs locally. Search terms are sent to arXiv. Unfinished sessions stay in memory: refreshing the same browser tab restores the session while the server is running, but restarting the server clears it. **Saved papers persist across restarts** in a local Chroma database under `data/library/`. Open **Browse saved papers** to inspect or remove them.
+
+Each saved paper is one document containing its title and full abstract, with an Ollama embedding and metadata: stable arXiv ID, authors, publication date, links, categories, save time, and the question that led to the save. The original question is provenance; it is not embedded into the paper. New questions search the paper content semantically, and the shared evaluator checks the candidates against your current question. A library match is not automatically a recommendation. Results identify papers found in your library, on arXiv, or both.
+
+Saving is always explicit. Re-saving a paper does not create a duplicate or replace its original saved snapshot. A failed save leaves the research results intact and can be retried. Browsing an empty library needs no embedding model; saving and searching a populated library require `embeddinggemma` (or your configured embedding model). A source failure is shown separately from an empty result, and the other source can still supply candidates.
 
 The frontend is plain HTML, CSS, and JavaScript served by Python. There is no separate frontend build to set up.
 
@@ -83,6 +89,19 @@ paper-retriever research "How can RAG reduce hallucinations?" --model qwen3:4b -
 
 At a review prompt, press Enter to accept, type your changes, or enter `/stop`. Add `--auto` to skip approvals within the same search limit, `--json` for JSON output, or `--output outputs/research.json` to save a result.
 
+Interactive research offers to save the final papers: type `y` to save the suggested shortlist, a list such as `1,3` to choose papers, or Enter to skip. `--auto` never saves papers unless you explicitly add `--save-shortlist`:
+
+```bash
+paper-retriever research "Grounding language models in external evidence" --model qwen3:4b --auto --save-shortlist
+paper-retriever library list
+paper-retriever library search "Improving factual accuracy with retrieved documents"
+paper-retriever library remove arxiv:2501.12345
+```
+
+`library list` supports `--limit` and `--offset`. Use `research --no-library` for arXiv-only research. Both `ui` and `research`, and each `library` subcommand, accept `--library-dir` and `--embedding-model`. You can also set `OLLAMA_EMBED_MODEL`; the default is `embeddinggemma`.
+
+The collection records its embedding model name and rejects a different model rather than mixing incompatible vectors. Keep the same embedding model and weights for saves and queries; use a new library directory when switching embedding models. Library files contain the saved research content and should be included in your local backups.
+
 For more control over a direct search, `--raw-query` accepts [arXiv query syntax](https://info.arxiv.org/help/api/user-manual.html):
 
 ```bash
@@ -93,7 +112,7 @@ You can set `OLLAMA_MODEL` instead of passing `--model`. The server address defa
 
 ## How the agent works
 
-LangGraph keeps track of the question, approvals, searches, and collected papers. Ollama improves the question and reviews the results after each search, choosing whether to search again or finish.
+LangGraph keeps track of the question, approvals, searches, and collected papers. After approval, two retrieval branches search Chroma and arXiv concurrently, then join before deduplication and evaluation. Ollama improves the question and reviews the merged results after each round, choosing whether to search again or finish. The branches share a bounded search plan and evaluator; they are not independent conversational agents.
 
 The workflow removes duplicate arXiv versions, stops repeated queries, and enforces the search limit. The model can only select papers that were returned by a search. The export keeps the model's assessment separate from the workflow's stopping reason.
 
@@ -101,9 +120,9 @@ There is more detail in [the architecture notes](docs/architecture.md).
 
 ## A few things to know
 
-The app currently searches arXiv and works with titles, metadata, and abstracts. It doesn't download PDFs, build a vector index, or generate a full research answer yet.
+The app currently searches arXiv and a local vector index of explicitly saved titles and abstracts. It doesn't download PDFs or generate a full research answer yet.
 
-The model reviews up to the 20 most recently collected papers and a short excerpt from each abstract. Treat its shortlist as a starting point for your own reading. Check that a rewritten question still reflects what you meant, especially dates, populations, or other limits.
+The model uses abstract excerpts. Collections larger than 20 candidates are screened in batches before the final evaluation; earlier candidates remain eligible through that screening. This adds model calls to larger sessions. Treat its shortlist as a starting point for your own reading. Check that a rewritten question still reflects what you meant, especially dates, populations, or other limits.
 
 Search uses keywords and arXiv's relevance ordering. API responses are cached for 24 hours under `data/cache/arxiv/`. Requests are spaced at least three seconds apart within each process; avoid running several retriever processes at once against arXiv.
 
@@ -115,6 +134,7 @@ Search uses keywords and arXiv's relevance ordering. API responses are cached fo
 | `ollama.py` | Model prompts and Ollama requests |
 | `planning.py`, `models.py` | Query plans, decisions, and paper records |
 | `sources/` | The paper-source interface and arXiv search |
+| `library.py` | Chroma persistence, paper documents, and local Ollama embeddings |
 | `ui.py`, `static/` | The local server and browser interface |
 | `__main__.py` | Terminal commands |
 | `tests/` | Tests and fictional paper fixtures |
@@ -134,4 +154,4 @@ Tests use fictional papers and mocked model responses, so they don't need arXiv 
 
 To redraw the README illustration, run `python scripts/make_readme_preview.py` with Pillow installed.
 
-Next up: compare the agent's results with a direct search, add manual paper selection, then work on full-text retrieval and answers with citations.
+Next up: compare retrieval quality with a direct search, then work on full-text retrieval and answers with citations.

@@ -392,6 +392,23 @@ footer > span:last-child > span { padding: 0 7px; color: #b7b1a6; }
   .paper-actions a, .paper-actions button { font-size: 9px; }
   .desktop-break { display: none; }
 }
+.library-card { padding: 24px; margin-top: 22px; }
+.library-card h2 { font-size: 21px; margin: 0 0 10px; }
+.library-card p { font-size: 12px; line-height: 1.6; }
+.library-paper { border-top: 1px solid var(--line, #ddd); padding: 16px 0; }
+.library-paper h3 { font-size: 14px; line-height: 1.4; margin: 0; overflow-wrap: anywhere; }
+.library-paper a { color: inherit; }
+.library-question { max-height: 5em; overflow-y: auto; }
+.library-pagination, .save-actions { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 20px; }
+.paper-origin { font-size: 10px; border: 1px solid currentColor; border-radius: 4px; padding: 3px 6px; }
+.save-panel { margin-top: 24px; padding: 28px; }
+.save-panel h2 { margin: 0 0 12px; font-size: 27px; }
+.save-panel p, .save-panel summary { font-size: 14px; line-height: 1.6; }
+.save-panel summary { cursor: pointer; padding: 10px 0; }
+.save-choices { max-height: 320px; overflow-y: auto; padding: 6px; }
+.save-choice { display: flex; align-items: flex-start; gap: 12px; padding: 12px 0; font-size: 13px; line-height: 1.5; cursor: pointer; }
+.save-choice input { flex: 0 0 auto; margin-top: 3px; width: 18px; height: 18px; accent-color: #344733; }
+.save-choice span { overflow-wrap: anywhere; }
 @media (hover: none) {
   .paper-card:hover { transform: none; box-shadow: none; }
 }

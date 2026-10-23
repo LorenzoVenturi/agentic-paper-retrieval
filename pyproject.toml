@@ -8,7 +8,7 @@ version = "0.4.0"
 description = "Find research papers with a local model, LangGraph, and human guidance"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["langgraph>=1.0,<2", "typing-extensions>=4.7,<5"]
+dependencies = ["langgraph>=1.0,<2", "typing-extensions>=4.7,<5", "chromadb>=1.5,<2"]
 
 [project.scripts]
 paper-retriever = "agentic_paper_retrieval.__main__:main"

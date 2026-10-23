@@ -1,5 +1,6 @@
 import json
 import threading
+import tempfile
 import time
 import unittest
 import urllib.error
@@ -10,6 +11,8 @@ from unittest.mock import Mock
 from agentic_paper_retrieval.planning import Decision, QueryRefinement
 from agentic_paper_retrieval.sources.arxiv import parse_feed
 from agentic_paper_retrieval.ui import UIServer, UIRuntime
+from agentic_paper_retrieval.library import ChromaPaperLibrary, LibraryError
+from test_library import FixtureEmbedder
 
 FEED = (Path(__file__).parent / "fixtures/arxiv.xml").read_bytes()
 
@@ -25,7 +28,9 @@ class UITests(unittest.TestCase):
         self.planner.refine.side_effect = refine
         self.planner.decide.return_value = Decision("finish", "", "Relevant candidates", ("arxiv:2501.99999",))
         self.source.search.return_value = parse_feed(FEED, "retrieval", "all:retrieval")
-        self.runtime = UIRuntime(planner_factory=lambda _: self.planner, source_factory=lambda: self.source)
+        self.temp = tempfile.TemporaryDirectory()
+        self.library = ChromaPaperLibrary(Path(self.temp.name), FixtureEmbedder())
+        self.runtime = UIRuntime(planner_factory=lambda _: self.planner, source_factory=lambda: self.source, library=self.library)
         self.runtime.configuration = lambda: {"models": ["test-model"], "default_model": "test-model", "ollama_available": True}
         self.server = UIServer(("127.0.0.1", 0), self.runtime)
         self.origin = f"http://127.0.0.1:{self.server.server_address[1]}"
@@ -37,6 +42,7 @@ class UITests(unittest.TestCase):
         self.server.server_close()
         self.runtime.close()
         self.thread.join(timeout=3)
+        self.temp.cleanup()
 
     def request(self, path, data=None, headers=None):
         request_headers = {"Origin": self.origin, **(headers or {})}
@@ -62,7 +68,7 @@ class UITests(unittest.TestCase):
         return data["id"]
 
     def wait_for(self, session_id, status):
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
             _, snapshot, _ = self.request(f"/api/sessions/{session_id}")
             if snapshot["status"] == status:
@@ -71,6 +77,62 @@ class UITests(unittest.TestCase):
                 self.fail(snapshot["error"])
             threading.Event().wait(0.01)
         self.fail(f"Session did not reach {status}: {snapshot}")
+
+    def complete(self):
+        session_id = self.create()
+        for status in ("awaiting_query", "awaiting_search"):
+            pending = self.wait_for(session_id, status)["pending"]
+            query = pending["refinement"]["refined_question"] if status == "awaiting_query" else pending["decision"]["query"]
+            self.assertEqual(self.request(f"/api/sessions/{session_id}/respond", {
+                "pending_id": pending["id"], "query": query,
+            })[0], 202)
+        return self.wait_for(session_id, "complete")
+
+    def wait_for_save(self, session_id, status):
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            data = self.request(f"/api/sessions/{session_id}")[1]
+            if data["library_save"]["status"] == status:
+                return data
+            threading.Event().wait(0.01)
+        self.fail(f"Save did not reach {status}: {data}")
+
+    def test_explicit_save_reuses_papers_in_a_later_query_and_removal_is_persistent(self):
+        final = self.complete()
+        self.assertEqual(self.request("/api/library")[1]["total"], 0)
+        self.assertEqual(self.request(f"/api/sessions/{final['id']}/save", {
+            "paper_ids": ["arxiv:2501.99999"],
+        })[0], 202)
+        saved = self.wait_for_save(final["id"], "saved")
+        self.assertEqual(saved["result"]["library_save"]["saved_paper_ids"], ["arxiv:2501.99999"])
+        self.assertEqual(self.request("/api/library")[1]["total"], 1)
+        self.source.search.return_value = parse_feed(FEED, "q", "q")
+        later = self.complete()
+        self.assertIn("library", later["result"]["paper_origins"]["arxiv:2501.99999"])
+        self.assertEqual(self.request("/api/library/remove", {"paper_id": "arxiv:2501.99999"})[0], 200)
+        self.assertEqual(self.request("/api/library")[1]["total"], 0)
+
+    def test_skip_and_unknown_ids_do_not_write_to_library(self):
+        final = self.complete()
+        path = f"/api/sessions/{final['id']}/save"
+        self.assertEqual(self.request(path, {"paper_ids": ["invented"]})[0], 400)
+        self.assertEqual(self.request(path, {"paper_ids": "arxiv:2501.99999"})[0], 400)
+        self.assertEqual(self.request(path, {"paper_ids": []})[1]["library_save"]["status"], "skipped")
+        self.assertEqual(self.request("/api/library")[1]["total"], 0)
+
+    def test_save_failure_can_be_retried_without_losing_research(self):
+        final = self.complete()
+        original = self.library.embedder.embed
+        self.library.embedder.embed = Mock(side_effect=LibraryError("Embedding model unavailable"))
+        path = f"/api/sessions/{final['id']}/save"
+        with self.assertLogs("agentic_paper_retrieval.ui", level="ERROR"):
+            self.request(path, {"paper_ids": ["arxiv:2501.99999"]})
+            failed = self.wait_for_save(final["id"], "error")
+        self.assertEqual(failed["status"], "complete")
+        self.assertEqual(failed["result"]["selected_paper_ids"], ["arxiv:2501.99999"])
+        self.library.embedder.embed = original
+        self.request(path, {"paper_ids": ["arxiv:2501.99999"]})
+        self.wait_for_save(final["id"], "saved")
 
     def test_assets_and_configuration_are_served_without_exposing_project_files(self):
         for path, expected in (("/", b"Paper Retriever"), ("/app.js", b"sendReview"), ("/styles.css", b"--paper")):

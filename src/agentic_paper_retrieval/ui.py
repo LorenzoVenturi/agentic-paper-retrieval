@@ -21,6 +21,7 @@ from langgraph.types import Command
 
 from agentic_paper_retrieval import __version__
 from agentic_paper_retrieval.agent import ResearchAgent
+from agentic_paper_retrieval.library import ChromaPaperLibrary, LibraryError, OllamaEmbedder
 from agentic_paper_retrieval.ollama import OllamaPlanner
 from agentic_paper_retrieval.sources.arxiv import ArxivSource
 
@@ -33,7 +34,7 @@ class SessionConflict(ValueError):
 
 
 class ResearchSession:
-    def __init__(self, question, model, max_rounds, limit, source, planner, executor):
+    def __init__(self, question, model, max_rounds, limit, source, planner, executor, library=None):
         initial = ResearchAgent.initial_state(question, max_rounds=max_rounds, limit=limit)
         self.id = uuid4().hex
         self.model = model
@@ -50,7 +51,9 @@ class ResearchSession:
         self.events = []
         self.busy = False
         self.stop_requested = False
-        self.graph = ResearchAgent(source, planner).build_graph(on_results=self._on_results)
+        self.library = library
+        self.library_save = {"status": "offered", "saved_paper_ids": [], "error": None}
+        self.graph = ResearchAgent(source, planner, library).build_graph(on_results=self._on_results)
         self.config = {
             "configurable": {"thread_id": self.id},
             "recursion_limit": 8 * max_rounds + 15,
@@ -71,8 +74,16 @@ class ResearchSession:
                 catalog.setdefault(paper.id, paper.to_dict())
             self.state["papers"] = list(catalog.values())
             self.state["steps"] = [*self.state["steps"], asdict(step)]
+            origins = self.state.setdefault("paper_origins", {})
+            for origin, ids in (("arxiv", step.paper_ids), ("library", step.library_paper_ids)):
+                for paper_id in ids:
+                    values = origins.setdefault(paper_id, [])
+                    if origin not in values:
+                        values.append(origin)
             self.message = "Reviewing the retrieved evidence"
             self._event(f"Retrieved {len(papers)} papers", step.executed_query)
+            if step.library_error or step.source_error:
+                self._event("A search source was unavailable", "; ".join(filter(None, (step.library_error, step.source_error))))
 
     def start(self):
         with self.lock:
@@ -149,8 +160,46 @@ class ResearchSession:
             if self.pending and not self.busy:
                 self.respond(self.pending["id"], None)
 
+    def save_papers(self, paper_ids):
+        with self.lock:
+            if self.status not in TERMINAL or self.library_save["status"] == "saving":
+                raise SessionConflict("Wait for the current operation to finish before saving papers.")
+            if self.library is None:
+                raise LibraryError("The saved library is not configured.")
+            if not isinstance(paper_ids, list) or len(paper_ids) > 100 or any(not isinstance(value, str) for value in paper_ids):
+                raise ValueError("Choose up to 100 retrieved paper IDs.")
+            known = {paper["id"]: paper for paper in self.state["papers"]}
+            if any(paper_id not in known for paper_id in paper_ids):
+                raise ValueError("Only papers retrieved in this session can be saved.")
+            if not paper_ids:
+                self.library_save = {"status": "skipped", "saved_paper_ids": [], "error": None}
+                self._event("Library save skipped")
+                return
+            from agentic_paper_retrieval.agent import _papers
+
+            papers = _papers([known[paper_id] for paper_id in dict.fromkeys(paper_ids)])
+            question = self.state.get("effective_question", self.state["question"])
+            self.library_save = {"status": "saving", "saved_paper_ids": [], "error": None}
+            self._event("Saving selected papers")
+            self.executor.submit(self._save_papers, papers, question)
+
+    def _save_papers(self, papers, question):
+        try:
+            result = self.library.save(papers, question)
+            with self.lock:
+                self.library_save = {"status": "saved", "error": None, **result}
+                self._event("Papers saved to your library", f"{result['added_count']} new papers saved for future questions.")
+        except Exception as exc:
+            LOG.exception("Saving session %s papers failed", self.id)
+            with self.lock:
+                self.library_save = {"status": "error", "saved_paper_ids": [], "error": str(exc)}
+                self._event("Papers could not be saved", str(exc))
+
     def snapshot(self):
         with self.lock:
+            result = self.state.get("result")
+            if result is not None:
+                result = {**result, "library_save": self.library_save}
             return copy.deepcopy({
                 "id": self.id, "revision": self.revision, "status": self.status,
                 "message": self.message, "model": self.model,
@@ -159,17 +208,24 @@ class ResearchSession:
                 "refinement": self.state.get("refinement"),
                 "effective_question": self.state.get("effective_question"),
                 "pending": self.pending, "papers": self.state["papers"],
-                "steps": self.state["steps"], "result": self.state.get("result"),
+                "steps": self.state["steps"], "result": result,
                 "error": self.error, "events": self.events,
+                "paper_origins": self.state.get("paper_origins", {}),
+                "library_save": self.library_save,
             })
 
 
 class UIRuntime:
     def __init__(self, ollama_url="http://localhost:11434", cache_dir=Path("data/cache/arxiv"),
-                 planner_factory=None, source_factory=None):
+                 planner_factory=None, source_factory=None, library=None,
+                 library_dir=Path("data/library"), embedding_model=None):
         self.ollama_url = ollama_url.rstrip("/")
         self.planner_factory = planner_factory or (lambda model: OllamaPlanner(model, self.ollama_url))
         self.source_factory = source_factory or (lambda: ArxivSource(cache_dir=cache_dir))
+        self.embedding_model = embedding_model or os.getenv("OLLAMA_EMBED_MODEL", "embeddinggemma")
+        self.library = library if library is not None else ChromaPaperLibrary(
+            library_dir, OllamaEmbedder(self.embedding_model, self.ollama_url),
+        )
         self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="paper-research")
         self.sessions = {}
         self.lock = threading.RLock()
@@ -180,7 +236,8 @@ class UIRuntime:
             request = urllib.request.Request(self.ollama_url + "/api/tags")
             with urllib.request.urlopen(request, timeout=3) as response:
                 data = json.load(response)
-            models = [item["name"] for item in data.get("models", []) if isinstance(item.get("name"), str)]
+            installed = [item["name"] for item in data.get("models", []) if isinstance(item.get("name"), str)]
+            models = [name for name in installed if name.removesuffix(":latest") != self.embedding_model.removesuffix(":latest")]
         except (OSError, ValueError, TypeError, AttributeError) as exc:
             error = "Cannot reach Ollama. Start it with ollama serve, then refresh the connection."
             LOG.debug("Ollama connection check: %s", exc)
@@ -189,6 +246,8 @@ class UIRuntime:
             "version": __version__, "models": models, "ollama_available": error is None,
             "default_model": preferred if preferred in models else (models[0] if models else ""),
             "error": error or (None if models else "No local model found. Run ollama pull qwen3:4b, then refresh."),
+            "embedding_model": self.embedding_model,
+            "library_note": f"Saved papers use {self.embedding_model} for semantic search. Install it with ollama pull {self.embedding_model}.",
         }
 
     def create(self, data):
@@ -211,6 +270,7 @@ class UIRuntime:
             session = ResearchSession(
                 question, model.strip(), rounds, limit, self.source_factory(),
                 self.planner_factory(model.strip()), self.executor,
+                self.library,
             )
             self.sessions[session.id] = session
             session.start()
@@ -283,6 +343,15 @@ class UIHandler(BaseHTTPRequestHandler):
             return self._send(200, files("agentic_paper_retrieval").joinpath("static", name).read_bytes(), mime + "; charset=utf-8")
         if path == "/api/config":
             return self._send(200, self.server.runtime.configuration())
+        if path == "/api/library":
+            try:
+                params = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                limit, offset = int(params.get("limit", ["50"])[0]), int(params.get("offset", ["0"])[0])
+                return self._send(200, self.server.runtime.library.list_papers(limit, offset))
+            except ValueError as exc:
+                return self._send(400, {"error": str(exc)})
+            except LibraryError as exc:
+                return self._send(503, {"error": str(exc)})
         match = re.fullmatch(r"/api/sessions/([a-f0-9]{32})(/export)?", path)
         if match:
             try:
@@ -309,12 +378,17 @@ class UIHandler(BaseHTTPRequestHandler):
             path = urllib.parse.urlsplit(self.path).path
             if path == "/api/sessions":
                 return self._send(202, self.server.runtime.create(data).snapshot())
-            match = re.fullmatch(r"/api/sessions/([a-f0-9]{32})/(respond|cancel)", path)
+            if path == "/api/library/remove":
+                self.server.runtime.library.remove(data.get("paper_id"))
+                return self._send(200, {"removed": True})
+            match = re.fullmatch(r"/api/sessions/([a-f0-9]{32})/(respond|cancel|save)", path)
             if not match:
                 return self._send(404, {"error": "Action not found."})
             session = self.server.runtime.get(match[1])
             if match[2] == "cancel":
                 session.cancel()
+            elif match[2] == "save":
+                session.save_papers(data.get("paper_ids"))
             else:
                 if "query" not in data or not isinstance(data.get("pending_id"), str):
                     raise ValueError("Provide the current review ID and an approved query.")
@@ -326,10 +400,13 @@ class UIHandler(BaseHTTPRequestHandler):
             self._send(404, {"error": str(exc)})
         except (ValueError, UnicodeDecodeError) as exc:
             self._send(400, {"error": str(exc)})
+        except LibraryError as exc:
+            self._send(503, {"error": str(exc)})
 
 
-def serve(port=8000, ollama_url="http://localhost:11434", cache_dir=Path("data/cache/arxiv")):
-    runtime = UIRuntime(ollama_url, cache_dir)
+def serve(port=8000, ollama_url="http://localhost:11434", cache_dir=Path("data/cache/arxiv"),
+          library_dir=Path("data/library"), embedding_model=None):
+    runtime = UIRuntime(ollama_url, cache_dir, library_dir=library_dir, embedding_model=embedding_model)
     try:
         server = UIServer(("127.0.0.1", port), runtime)
     except OSError:

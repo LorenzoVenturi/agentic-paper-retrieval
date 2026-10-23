@@ -44,7 +44,7 @@
       </div>
     </div>
 
-    <div class="workspace-meta"><span><span class="mini-star" aria-hidden="true">✦</span> YOUR NEXT DISCOVERY STARTS HERE</span><span class="source-label">Searching <strong>arXiv</strong><span class="meta-divider" aria-hidden="true">/</span> Guided by you</span></div>
+    <div class="workspace-meta"><span><span class="mini-star" aria-hidden="true">✦</span> YOUR NEXT DISCOVERY STARTS HERE</span><span class="source-label">Searching <strong>arXiv + your library</strong><span class="meta-divider" aria-hidden="true">/</span> Guided by you</span></div>
     <div id="notice" class="notice" role="alert" hidden></div>
 
     <div class="workspace">
@@ -72,7 +72,8 @@
           <p class="review-note"><span aria-hidden="true">✓</span>Your question. Your call. Approve every search.</p>
         </section>
         <section id="trail-card" class="trail-card" hidden><div class="trail-header"><h2>The research trail</h2><span id="trail-count" class="subtle-label"></span></div><ol id="trail" class="trail"></ol></section>
-        <p class="local-note"><span aria-hidden="true">◉</span><span>Your model runs locally. Search terms go to arXiv. Sessions last while this server runs.</span></p>
+        <section class="card library-card"><h2>Your saved library</h2><p>Keep useful papers for future questions. Saved papers stay here across restarts.</p><button id="library-toggle" class="button outline small" type="button" aria-expanded="false" aria-controls="library-panel">Browse saved papers</button><div id="library-panel" hidden><p id="library-status" role="status"></p><div id="library-list"></div><div class="library-pagination"><button id="library-prev" class="button quiet small" type="button">Previous</button><button id="library-next" class="button quiet small" type="button">Next</button></div></div></section>
+        <p class="local-note"><span aria-hidden="true">◉</span><span>Your model and library run locally. Search terms go to arXiv. Unfinished sessions last while this server runs.</span></p>
       </aside>
 
       <section class="results-workspace" aria-label="Research results">
@@ -95,8 +96,10 @@
 
         <div id="review-panel"></div>
         <div id="overview"></div>
+        <div id="source-notice" class="notice" role="status" hidden></div>
         <section id="papers-section" hidden><div class="papers-heading"><div><p id="papers-eyebrow" class="eyebrow">FRESH FROM THE LITERATURE</p><h2 id="papers-title">Retrieved papers</h2><p id="papers-summary" class="muted"></p></div><div id="paper-tabs" class="paper-tabs" hidden><button id="tab-shortlist" type="button" aria-pressed="true">Shortlist</button><button id="tab-all" type="button" aria-pressed="false">All papers</button></div></div><div id="paper-list" class="paper-list"></div></section>
         <div id="completion" class="completion" hidden></div>
+        <section id="save-panel" class="card save-panel" hidden aria-label="Save papers for future research"></section>
       </section>
     </div>
     <footer><span>Stay curious. <span class="footer-spark" aria-hidden="true">✳</span> Keep digging.</span><span>Local intelligence <span aria-hidden="true">/</span> Real papers <span aria-hidden="true">/</span> Your direction</span></footer>

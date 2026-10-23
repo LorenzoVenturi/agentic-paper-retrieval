@@ -1,9 +1,12 @@
 import unittest
+import threading
 from unittest.mock import Mock
 
 from agentic_paper_retrieval.agent import ResearchAgent
 from agentic_paper_retrieval.planning import Decision, PlannerError, QueryRefinement
 from agentic_paper_retrieval.models import Paper, SearchResult
+from agentic_paper_retrieval.library import LibraryError
+from agentic_paper_retrieval.sources.base import SourceError
 
 
 def paper(number):
@@ -19,6 +22,51 @@ def plan(query="initial keywords", question="A clearer research question"):
 
 
 class AgentTests(unittest.TestCase):
+    def test_parallel_retrievers_merge_before_evaluation_and_preserve_both_origins(self):
+        source, library, planner = Mock(), Mock(), Mock()
+        barrier = threading.Barrier(2)
+        first, second = paper("saved"), paper("new")
+
+        def remote_search(*args, **kwargs):
+            barrier.wait(timeout=2)
+            return result(first, second)
+
+        def local_search(*args, **kwargs):
+            barrier.wait(timeout=2)
+            return result(first)
+
+        source.search.side_effect, library.search.side_effect = remote_search, local_search
+        planner.refine.return_value = plan()
+        planner.decide.return_value = Decision("finish", "", "Both candidates are relevant", (first.id, second.id))
+        research = ResearchAgent(source, planner, library).run("question", max_rounds=1)
+        self.assertEqual(research.papers, (first, second))
+        self.assertEqual(research.paper_origins[first.id], ["library", "arxiv"])
+        self.assertEqual(research.paper_origins[second.id], ["arxiv"])
+        self.assertEqual(research.steps[0].library_paper_ids, (first.id,))
+        planner.decide.assert_called_once()
+        library.save.assert_not_called()
+
+    def test_one_failed_source_keeps_the_other_sources_results(self):
+        for failing_source in ("library", "arxiv"):
+            with self.subTest(failing_source=failing_source):
+                source, library, planner = Mock(), Mock(), Mock()
+                source.search.return_value = library.search.return_value = result(paper("one"))
+                (library if failing_source == "library" else source).search.side_effect = LibraryError("source offline")
+                planner.refine.return_value = plan()
+                planner.decide.return_value = Decision("finish", "", "Partial coverage", ("arxiv:one",))
+                research = ResearchAgent(source, planner, library).run("q", max_rounds=1)
+                self.assertEqual(len(research.papers), 1)
+                self.assertIn("source offline", research.steps[0].library_error + research.steps[0].source_error)
+
+    def test_both_unavailable_sources_fail_without_claiming_empty_search_results(self):
+        source, library, planner = Mock(), Mock(), Mock()
+        source.search.side_effect = SourceError("arxiv offline")
+        library.search.side_effect = LibraryError("library offline")
+        planner.refine.return_value = plan()
+        with self.assertRaisesRegex(SourceError, "arxiv offline.*library offline"):
+            ResearchAgent(source, planner, library).run("q")
+        planner.decide.assert_not_called()
+
     def test_refines_from_results_deduplicates_and_finishes(self):
         first, second = paper("one"), paper("two")
         source, planner = Mock(), Mock()

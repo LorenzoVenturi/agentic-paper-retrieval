@@ -39,6 +39,10 @@ class SearchStep:
     source_query: str
     total_results: int
     paper_ids: tuple[str, ...]
+    library_query: str = ""
+    library_paper_ids: tuple[str, ...] = ()
+    library_error: str = ""
+    source_error: str = ""
 
 
 class Planner(Protocol):

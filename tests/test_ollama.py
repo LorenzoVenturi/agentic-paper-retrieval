@@ -7,6 +7,7 @@ from unittest.mock import patch
 from agentic_paper_retrieval.agent import PlannerError
 from agentic_paper_retrieval.ollama import OllamaPlanner, parse_decision
 from test_planning import refinement_data
+from test_library import fixture_paper
 
 
 def response(decision):
@@ -14,6 +15,24 @@ def response(decision):
 
 
 class OllamaTests(unittest.TestCase):
+    def test_candidate_screening_includes_earlier_papers_before_final_selection(self):
+        papers = tuple(fixture_paper(str(i)) for i in range(40))
+        finish = lambda ids: {"action": "finish", "query": "", "reason": "Relevant evidence", "selected_paper_ids": ids}
+        with patch.object(OllamaPlanner, "_chat", side_effect=[
+            finish([papers[0].id]), finish([papers[20].id]), finish([papers[0].id]),
+        ]) as chat:
+            decision = OllamaPlanner("model").decide("q", (), papers, allow_search=False)
+        self.assertEqual(decision.selected_paper_ids, (papers[0].id,))
+        screened = [p["id"] for call in chat.call_args_list[:2] for p in call.args[1]["papers"]]
+        self.assertEqual(screened, [paper.id for paper in papers])
+
+    def test_candidate_screening_cannot_invent_papers(self):
+        with patch.object(OllamaPlanner, "_chat", return_value={
+            "action": "finish", "query": "", "reason": "r", "selected_paper_ids": ["invented"],
+        }):
+            with self.assertRaisesRegex(PlannerError, "screening selection"):
+                OllamaPlanner("model").decide("q", (), tuple(fixture_paper(str(i)) for i in range(21)), allow_search=False)
+
     def test_refiner_uses_original_question_and_a_dedicated_schema(self):
         data = refinement_data()
         with patch("agentic_paper_retrieval.ollama.urllib.request.urlopen", return_value=response(data)) as send:

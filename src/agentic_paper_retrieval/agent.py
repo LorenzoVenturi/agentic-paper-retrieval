@@ -1,7 +1,7 @@
 """LangGraph research workflow."""
 
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from uuid import uuid4
 
 from typing_extensions import TypedDict
@@ -11,10 +11,11 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
 from agentic_paper_retrieval.models import Paper
+from agentic_paper_retrieval.library import PaperLibrary
 from agentic_paper_retrieval.planning import (
     Decision, Planner, PlannerError, QueryRefinement, SearchStep, parse_refinement,
 )
-from agentic_paper_retrieval.sources.base import PaperSource
+from agentic_paper_retrieval.sources.base import PaperSource, SourceError
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class ResearchResult:
     rationale: str
     model_assessment: str
     unresolved_clarifications: tuple[str, ...]
+    paper_origins: dict[str, list[str]] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -56,6 +58,9 @@ class ResearchState(TypedDict, total=False):
     rationale: str
     model_assessment: str
     result: dict
+    arxiv_result: dict
+    library_result: dict
+    paper_origins: dict[str, list[str]]
 
 
 def _papers(records: list[dict]) -> tuple[Paper, ...]:
@@ -68,6 +73,7 @@ def _papers(records: list[dict]) -> tuple[Paper, ...]:
 def _steps(records: list[dict]) -> tuple[SearchStep, ...]:
     return tuple(SearchStep(**{
         **record, "paper_ids": tuple(record["paper_ids"]),
+        "library_paper_ids": tuple(record.get("library_paper_ids", ())),
     }) for record in records)
 
 
@@ -86,13 +92,15 @@ def _result(record: dict) -> ResearchResult:
         stop_reason=record["stop_reason"], rationale=record["rationale"],
         model_assessment=record["model_assessment"],
         unresolved_clarifications=parse_refinement(record["refinement"]).clarification_questions,
+        paper_origins=record.get("paper_origins", {}),
     )
 
 
 class ResearchAgent:
-    def __init__(self, source: PaperSource, planner: Planner):
+    def __init__(self, source: PaperSource, planner: Planner, library: PaperLibrary | None = None):
         self.source = source
         self.planner = planner
+        self.library = library
 
     @staticmethod
     def initial_state(
@@ -111,6 +119,7 @@ class ResearchAgent:
             "max_rounds": max_rounds, "limit": limit, "steps": [], "papers": [],
             "seen_queries": [], "selected_paper_ids": [], "stop_reason": "",
             "rationale": "", "model_assessment": "",
+            "paper_origins": {},
         }
 
     def build_graph(
@@ -172,24 +181,54 @@ class ResearchAgent:
                 }
             return {"executed_query": query}
 
-        def search(state: ResearchState) -> dict:
+        def search_arxiv(state: ResearchState) -> dict:
             if len(state["steps"]) >= state["max_rounds"]:
                 raise PlannerError("The search budget has been exhausted.")
+            try:
+                result = self.source.search(state["executed_query"], limit=state["limit"])
+                return {"arxiv_result": {**result.to_dict(), "error": ""}}
+            except SourceError as exc:
+                return {"arxiv_result": {"papers": [], "source_query": "", "total_results": 0, "error": str(exc)}}
+
+        def search_library(state: ResearchState) -> dict:
+            # The question carries intent; approved search terms narrow later rounds.
+            query = state["effective_question"] + "\nSearch focus: " + state["executed_query"]
+            try:
+                result = self.library.search(query, limit=state["limit"]) if self.library else None
+                return {"library_result": {
+                    "papers": [paper.to_dict() for paper in result.papers] if result else [],
+                    "source_query": query if result else "", "error": "",
+                }}
+            except SourceError as exc:
+                return {"library_result": {"papers": [], "source_query": query, "error": str(exc)}}
+
+        def merge_results(state: ResearchState) -> dict:
             query, decision = state["executed_query"], _decision(state["decision"])
-            result = self.source.search(query, limit=state["limit"])
+            remote, local = state["arxiv_result"], state["library_result"]
+            if remote["error"] and not local["papers"] and not state["papers"]:
+                raise SourceError(remote["error"] + ("; " + local["error"] if local["error"] else ""))
             catalog = {paper.id: paper for paper in _papers(state["papers"])}
-            for paper in result.papers:
-                catalog.setdefault(paper.id, paper)
+            origins = {key: list(value) for key, value in state["paper_origins"].items()}
+            found = {}
+            for origin, records in (("library", local["papers"]), ("arxiv", remote["papers"])):
+                for paper in _papers(records):
+                    catalog[paper.id] = found[paper.id] = paper
+                    sources = origins.setdefault(paper.id, [])
+                    if origin not in sources:
+                        sources.append(origin)
             step = SearchStep(
-                decision.query, query, decision.reason, result.source_query,
-                result.total_results, tuple(paper.id for paper in result.papers),
+                decision.query, query, decision.reason, remote["source_query"],
+                remote["total_results"], tuple(paper["id"] for paper in remote["papers"]),
+                local["source_query"], tuple(paper["id"] for paper in local["papers"]),
+                local["error"], remote["error"],
             )
             if on_results:
-                on_results(step, result.papers)
+                on_results(step, tuple(found.values()))
             return {
                 "steps": [*state["steps"], asdict(step)],
                 "papers": [paper.to_dict() for paper in catalog.values()],
                 "seen_queries": [*state["seen_queries"], query.casefold()],
+                "paper_origins": origins,
             }
 
         def evaluate(state: ResearchState) -> dict:
@@ -233,17 +272,25 @@ class ResearchAgent:
         for name, node in (
             ("refine_query", refine_query), ("review_query", review_query),
             ("replan_query", replan_query), ("prepare_search", prepare_search),
-            ("approve_search", approve_search), ("search", search),
+            ("approve_search", approve_search), ("search_arxiv", search_arxiv),
+            ("search_library", search_library), ("merge_results", merge_results),
             ("evaluate", evaluate), ("finish", finish),
         ):
             builder.add_node(name, node)
+
+
+            
         builder.add_edge(START, "refine_query")
         builder.add_edge("refine_query", "review_query")
         builder.add_conditional_edges("review_query", after_review, ["finish", "replan_query", "prepare_search"])
         builder.add_edge("replan_query", "prepare_search")
         builder.add_edge("prepare_search", "approve_search")
-        builder.add_conditional_edges("approve_search", lambda state: "finish" if state["stop_reason"] else "search", ["finish", "search"])
-        builder.add_edge("search", "evaluate")
+        builder.add_conditional_edges(
+            "approve_search", lambda state: ["finish"] if state["stop_reason"] else ["search_arxiv", "search_library"],
+            ["finish", "search_arxiv", "search_library"],
+        )
+        builder.add_edge(["search_arxiv", "search_library"], "merge_results")
+        builder.add_edge("merge_results", "evaluate")
         builder.add_conditional_edges("evaluate", after_decision, ["finish", "approve_search"])
         builder.add_edge("finish", END)
         return builder.compile(checkpointer=InMemorySaver())
@@ -272,3 +319,4 @@ class ResearchAgent:
                 raise PlannerError("The graph requested an unsupported approval.")
             state = graph.invoke(Command(resume={"query": response}), config=config)
         return _result(state["result"])
+
